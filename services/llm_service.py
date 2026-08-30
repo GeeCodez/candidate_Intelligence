@@ -38,6 +38,20 @@ class ClaimItem(BaseModel):
     )
 
 
+
+class EvidenceDetails(BaseModel):
+    sources_checked: int = 0
+    relevant_sources: int = 0
+    key_findings: list[str] = Field(default_factory=list)
+
+
+class EvidenceEvaluationResult(BaseModel):
+    finding: str
+    evidence_strength: Literal["high", "medium", "low"]
+    status: Literal["verified", "unverified"]
+    details: EvidenceDetails = Field(default_factory=EvidenceDetails)
+
+
 class CandidateAnalysisResult(BaseModel):
     requirements: list[RequirementItem]
     claims: list[ClaimItem]
@@ -150,3 +164,52 @@ def analyze_candidate(
     data = result.model_dump()
     data["urls"] = _merge_urls(data["urls"], extracted_urls)
     return data
+
+
+def _build_evidence_prompt(claim, requirement, research_findings: str) -> str:
+    return f"""You evaluate browser research about a candidate claim.
+
+Claim: {claim.claim}
+Requirement: {requirement.name} - {requirement.description or ''}
+
+Browser research findings:
+{research_findings}
+
+Return only structured JSON.
+Rules:
+- Use only the browser research findings.
+- Do not invent facts, URLs, repositories, technologies, counts, or employers.
+- status is verified only when public evidence is sufficient to support the claim.
+- unverified means public evidence is insufficient; it does not mean the claim is false.
+- evidence_strength must be high, medium, or low.
+- Include counts and key findings in details when present.
+"""
+
+
+def evaluate_evidence(claim, requirement, research_findings: str) -> dict:
+    if not research_findings or not research_findings.strip():
+        raise LLMResponseError("Browser research findings are empty.")
+
+    client = _get_client()
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_json_schema=EvidenceEvaluationResult.model_json_schema(),
+    )
+
+    try:
+        chat = client.chats.create(model=GEMINI_MODEL, config=config)
+        response = chat.send_message(
+            _build_evidence_prompt(claim, requirement, research_findings)
+        )
+    except Exception as e:
+        raise LLMAPIError(f"Gemini evidence evaluation failed: {e}") from e
+
+    if not response.text:
+        raise LLMResponseError("Gemini returned an empty evidence response.")
+
+    try:
+        result = EvidenceEvaluationResult.model_validate_json(response.text)
+    except ValidationError as e:
+        raise LLMValidationError(f"Invalid evidence output from Gemini: {e}") from e
+
+    return result.model_dump()

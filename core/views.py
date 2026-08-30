@@ -2,6 +2,9 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from .models import Investigation, Requirement, CandidateClaim, Source
 from services.pdf_extraction import extract_cv_content, PDFExtractionError
+from asgiref.sync import async_to_sync
+
+from services.browser_service import verify_claim
 from services.llm_service import (
     analyze_candidate,
     LLMConfigurationError,
@@ -100,12 +103,14 @@ def process_cv(request):
                     requirement = requirement_map.get(requirement_name)
                     
                     if requirement:
-                        CandidateClaim.objects.create(
+                        claim = CandidateClaim.objects.create(
                             investigation=investigation,
                             requirement=requirement,
                             claim=claim_data.get('claim', ''),
                             source_from_cv=claim_data.get('source_from_cv', '')
                         )
+                        sources = list(investigation.sources.all())
+                        async_to_sync(verify_claim)(claim, requirement, sources)
 
         investigation.status = 'completed'
         investigation.save()
