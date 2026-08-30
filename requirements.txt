@@ -1,0 +1,7 @@
+Django
+google-genai
+pydantic
+PyMuPDF
+python-dotenv
+asgiref
+browser-use
