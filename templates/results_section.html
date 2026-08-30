@@ -1,0 +1,45 @@
+<section class="max-w-5xl mx-auto" id="state-results">
+    <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-lg gap-md">
+        <div>
+            <h1 class="font-headline-lg text-headline-lg text-primary mb-xs">Extraction Results</h1>
+            <p class="font-body-md text-body-md text-on-surface-variant" id="results-subtitle">Analysis complete</p>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-md mb-xl">
+        <div class="bg-surface-container-lowest border border-surface-variant rounded-DEFAULT p-md flex flex-col">
+            <span class="font-label-sm text-label-sm text-on-surface-variant uppercase mb-xs">Requirements</span>
+            <span class="font-headline-md text-headline-md text-primary" id="stat-requirements">0</span>
+        </div>
+        <div class="bg-surface-container-lowest border border-surface-variant rounded-DEFAULT p-md flex flex-col">
+            <span class="font-label-sm text-label-sm text-on-surface-variant uppercase mb-xs">Claims Extracted</span>
+            <span class="font-headline-md text-headline-md text-primary" id="stat-claims">0</span>
+        </div>
+        <div class="bg-surface-container-lowest border border-surface-variant rounded-DEFAULT p-md flex flex-col">
+            <span class="font-label-sm text-label-sm text-on-surface-variant uppercase mb-xs">URLs Found</span>
+            <span class="font-headline-md text-headline-md text-primary" id="stat-urls">0</span>
+        </div>
+    </div>
+
+    <div class="bg-surface-container-lowest border border-surface-variant rounded-lg overflow-hidden shadow-sm mb-xl">
+        <div class="p-md border-b border-surface-variant bg-surface-container-low">
+            <h2 class="font-headline-md text-headline-md text-primary">Discovered URLs</h2>
+            <p class="font-body-md text-body-md text-on-surface-variant mt-xs">Public links extracted from the CV for future verification.</p>
+        </div>
+        <ul class="p-md space-y-xs font-body-md text-body-md" id="urls-list">
+            <li class="text-on-surface-variant">No URLs found.</li>
+        </ul>
+    </div>
+
+    <div class="bg-surface-container-lowest border border-surface-variant rounded-lg overflow-hidden shadow-sm">
+        <div class="grid grid-cols-12 gap-md p-md border-b border-surface-variant bg-surface-container-lowest font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider hidden md:grid">
+            <div class="col-span-3">Requirement</div>
+            <div class="col-span-5">Candidate Claim</div>
+            <div class="col-span-2">Importance</div>
+            <div class="col-span-2 text-right">Status</div>
+        </div>
+        <div class="flex flex-col" id="claims-list">
+            <p class="p-md font-body-md text-body-md text-on-surface-variant">No claims extracted yet.</p>
+        </div>
+    </div>
+</section>

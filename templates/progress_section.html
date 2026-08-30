@@ -1,0 +1,26 @@
+<section class="max-w-3xl mx-auto mt-xl" id="state-progress">
+    <div class="text-center mb-xl fade-in stagger-1">
+        <h2 class="font-headline-lg text-headline-lg text-primary mb-xs">Analyzing Candidate</h2>
+        <p class="font-body-md text-body-md text-on-surface-variant" id="progress-subtitle">Processing uploaded document...</p>
+    </div>
+    <div class="bg-surface-container-lowest rounded-lg border border-surface-variant p-lg shadow-sm fade-in stagger-2">
+        <div class="space-y-md mb-xl">
+            <div class="flex items-center gap-md">
+                <div class="progress-dot active" id="step1-dot"></div>
+                <p class="font-body-md text-body-md text-on-surface" id="step1-text">Extracting text from CV...</p>
+            </div>
+            <div class="flex items-center gap-md">
+                <div class="progress-dot" id="step2-dot"></div>
+                <p class="font-body-md text-body-md text-on-surface-variant" id="step2-text">Extracting requirements from job description...</p>
+            </div>
+            <div class="flex items-center gap-md">
+                <div class="progress-dot" id="step3-dot"></div>
+                <p class="font-body-md text-body-md text-on-surface-variant" id="step3-text">Matching candidate claims to requirements...</p>
+            </div>
+        </div>
+        <div class="fade-in stagger-3">
+            <h3 class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider mb-sm">Agent Activity Log</h3>
+            <div class="bg-surface-container-low rounded-DEFAULT p-md font-body-md text-body-md text-on-surface h-48 overflow-y-auto font-mono text-xs border border-surface-variant flex flex-col gap-sm" id="activity-feed"></div>
+        </div>
+    </div>
+</section>
