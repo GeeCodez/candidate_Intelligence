@@ -1,0 +1,37 @@
+<section class="fade-in max-w-5xl mx-auto mt-lg" id="state-input">
+    <div class="text-center mb-xl">
+        <h1 class="font-display-lg text-display-lg text-primary mb-sm">Go beyond the CV.</h1>
+        <p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl mx-auto">Upload a candidate dossier and define the role requirements. Our intelligence agent will cross-reference claims against verifiable public data.</p>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-lg bg-surface-container-lowest rounded-lg border border-surface-variant p-lg shadow-sm">
+        <div class="flex flex-col h-full">
+            <label class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider mb-sm block">Candidate Document (PDF)</label>
+            <div class="drop-zone flex-grow flex flex-col items-center justify-center rounded-DEFAULT p-xl text-center cursor-pointer relative overflow-hidden min-h-[300px]" id="drop-zone">
+                <input accept=".pdf" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" id="cv-upload" name="cv_file" type="file"/>
+                <div id="upload-prompt">
+                    <span class="material-symbols-outlined text-[48px] text-outline mb-md">upload_file</span>
+                    <p class="font-body-md text-body-md text-on-surface font-medium mb-xs">Drag &amp; drop CV here</p>
+                    <p class="font-body-md text-body-md text-on-surface-variant text-xs">or click to browse</p>
+                </div>
+                <div class="hidden absolute inset-0 bg-surface-container-low flex flex-col items-center justify-center border border-primary rounded-DEFAULT" id="upload-success">
+                    <span class="material-symbols-outlined text-[32px] text-primary mb-sm">check_circle</span>
+                    <p class="font-body-md text-body-md text-primary font-medium" id="filename-display"></p>
+                    <button class="mt-sm font-label-md text-label-md btn-ghost text-xs underline" onclick="resetUpload(event)" type="button">Remove</button>
+                </div>
+            </div>
+        </div>
+        <div class="flex flex-col h-full">
+            <div class="flex justify-between items-end mb-sm">
+                <label class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider block" for="job-description">Role Requirements &amp; Context</label>
+                <span class="font-label-sm text-label-sm text-on-surface-variant" id="char-count">0 / 2000</span>
+            </div>
+            <textarea class="input-base w-full flex-grow rounded-DEFAULT p-md font-body-md text-body-md text-on-surface resize-none min-h-[300px]" id="job-description" maxlength="2000" placeholder="Paste the job description, required skills, or specific areas of concern you want the agent to investigate..."></textarea>
+        </div>
+    </div>
+    <div class="mt-xl flex justify-end">
+        <button class="btn-primary rounded-lg px-xl py-md font-label-md text-label-md font-semibold flex items-center gap-sm disabled:opacity-50 disabled:cursor-not-allowed" id="start-btn" onclick="startInvestigation()">
+            Investigate Candidate
+            <span class="material-symbols-outlined text-[18px]">arrow_forward</span>
+        </button>
+    </div>
+</section>

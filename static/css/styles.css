@@ -1,0 +1,176 @@
+body { 
+    font-family: 'Inter', sans-serif; 
+    background-color: theme('colors.background'); 
+    color: theme('colors.on-background'); 
+}
+
+.fade-in { 
+    animation: fadeIn 0.4s ease-out forwards; 
+}
+
+.fade-out { 
+    animation: fadeOut 0.3s ease-in forwards; 
+}
+
+@keyframes fadeIn { 
+    from { opacity: 0; transform: translateY(10px); } 
+    to { opacity: 1; transform: translateY(0); } 
+}
+
+@keyframes fadeOut { 
+    from { opacity: 1; transform: translateY(0); } 
+    to { opacity: 0; transform: translateY(-10px); } 
+}
+
+.drop-zone { 
+    transition: all 0.2s ease; 
+    border: 1px dashed theme('colors.outline'); 
+    background-color: theme('colors.surface-container-lowest'); 
+}
+
+.drop-zone.dragover { 
+    border-color: theme('colors.primary'); 
+    background-color: theme('colors.surface-container-low'); 
+}
+
+.input-base {
+    background-color: theme('colors.surface-container-lowest');
+    border: 1px solid theme('colors.surface-variant');
+    transition: all 0.2s ease;
+}
+
+.input-base:focus {
+    outline: none;
+    border-color: theme('colors.primary');
+    box-shadow: 0 0 0 2px rgba(9, 20, 38, 0.1);
+}
+
+.btn-primary {
+    background-color: theme('colors.primary');
+    color: theme('colors.on-primary');
+    transition: background-color 0.2s;
+}
+
+.btn-primary:hover { 
+    background-color: theme('colors.primary-container'); 
+}
+
+.btn-secondary {
+    background-color: theme('colors.surface-container-lowest');
+    border: 1px solid theme('colors.surface-variant');
+    color: theme('colors.on-surface-variant');
+    transition: all 0.2s;
+}
+
+.btn-secondary:hover { 
+    background-color: theme('colors.surface-container-low'); 
+}
+
+.btn-ghost {
+    color: theme('colors.on-surface-variant');
+    background: transparent;
+    transition: color 0.2s;
+}
+
+.btn-ghost:hover { 
+    color: theme('colors.primary'); 
+}
+
+.accordion-content { 
+    display: none; 
+}
+
+.accordion-content.open { 
+    display: block; 
+    animation: slideDown 0.3s ease-out; 
+}
+
+@keyframes slideDown { 
+    from { opacity: 0; transform: translateY(-5px); } 
+    to { opacity: 1; transform: translateY(0); } 
+}
+
+.accordion-icon { 
+    transition: transform 0.2s ease; 
+}
+
+.accordion-trigger.open .accordion-icon { 
+    transform: rotate(180deg); 
+}
+
+.progress-dot {
+    width: 8px; 
+    height: 8px; 
+    border-radius: 50%;
+    background-color: theme('colors.outline-variant');
+    transition: background-color 0.3s ease;
+}
+
+.progress-dot.active { 
+    background-color: theme('colors.primary'); 
+    animation: pulse 1.5s infinite; 
+}
+
+.progress-dot.completed { 
+    background-color: theme('colors.primary'); 
+}
+
+@keyframes pulse { 
+    0% { box-shadow: 0 0 0 0 rgba(9,20,38, 0.4); } 
+    70% { box-shadow: 0 0 0 6px rgba(9,20,38, 0); } 
+    100% { box-shadow: 0 0 0 0 rgba(9,20,38, 0); } 
+}
+
+#state-progress, #state-results { 
+    display: none; 
+}
+
+#toast-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.toast {
+    background-color: theme('colors.error');
+    color: theme('colors.on-error');
+    padding: 12px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    animation: slideInRight 0.3s ease-out, fadeOutToast 0.3s ease-in 2.7s forwards;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+@keyframes slideInRight { 
+    from { transform: translateX(100%); opacity: 0; } 
+    to { transform: translateX(0); opacity: 1; } 
+}
+
+@keyframes fadeOutToast { 
+    from { opacity: 1; } 
+    to { opacity: 0; } 
+}
+
+.stagger-1 { 
+    animation-delay: 0.1s; 
+    opacity: 0; 
+    animation-fill-mode: forwards; 
+}
+
+.stagger-2 { 
+    animation-delay: 0.2s; 
+    opacity: 0; 
+    animation-fill-mode: forwards; 
+}
+
+.stagger-3 { 
+    animation-delay: 0.3s; 
+    opacity: 0; 
+    animation-fill-mode: forwards; 
+}
