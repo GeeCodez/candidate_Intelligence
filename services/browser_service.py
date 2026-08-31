@@ -3,10 +3,14 @@ import importlib
 import json
 import logging
 import os
-from urllib.parse import urlparse
+import re
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 from asgiref.sync import sync_to_async
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from core.models import Evidence
@@ -14,6 +18,8 @@ from core.models import Evidence
 logger = logging.getLogger(__name__)
 
 MAX_SOURCES_PER_CLAIM = 5
+GITHUB_REPOSITORY_LIMIT = int(os.getenv("GITHUB_REPOSITORY_LIMIT", "20"))
+GITHUB_REQUEST_TIMEOUT_SECONDS = int(os.getenv("GITHUB_REQUEST_TIMEOUT_SECONDS", "12"))
 BROWSER_TIMEOUT_SECONDS = int(os.getenv("BROWSER_USE_TIMEOUT_SECONDS", "150"))
 LLM7_MODEL = os.getenv("LLM7_MODEL", "default")
 
@@ -47,60 +53,267 @@ def _source_score(claim, requirement, source):
     return score
 
 
+def _github_headers():
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "candidate-intelligence-agent",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_api_get(path: str):
+    request = Request(
+        f"https://api.github.com{path}",
+        headers=_github_headers(),
+    )
+    with urlopen(request, timeout=GITHUB_REQUEST_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _is_github_source(source):
     host = urlparse(source.url).netloc.lower()
-    return host == "github.com" or host.endswith(".github.com")
+    return host == "github.com"
+
+
+def _github_url_kind(url: str):
+    """Return ('profile', owner, None) or ('repo', owner, repo) for safe GitHub URLs."""
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com":
+        return None
+
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) == 1 and re.fullmatch(r"[A-Za-z0-9_.-]+", parts[0]):
+        return ("profile", parts[0], None)
+    if len(parts) >= 2 and all(
+        re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts[:2]
+    ):
+        if parts[0].lower() not in {
+            "topics",
+            "trending",
+            "marketplace",
+            "orgs",
+            "explore",
+            "features",
+            "settings",
+        }:
+            return ("repo", parts[0], parts[1])
+    return None
+
+
+def _repo_is_open_source(repo: dict) -> tuple[bool, str]:
+    if repo.get("private") is True:
+        return False, "repository is private"
+    license_info = repo.get("license") or {}
+    spdx_id = license_info.get("spdx_id")
+    license_name = license_info.get("name")
+    if not spdx_id or spdx_id == "NOASSERTION":
+        return False, "no recognized open-source license is reported by GitHub"
+    return True, f"license: {spdx_id or license_name}"
+
+
+def _claim_tokens(claim, requirement):
+    text = f"{getattr(claim, 'claim', '')} {getattr(requirement, 'name', '')} {getattr(requirement, 'description', '') or ''}".lower()
+    stop = {
+        "candidate",
+        "experience",
+        "using",
+        "with",
+        "that",
+        "this",
+        "have",
+        "has",
+        "and",
+        "the",
+        "for",
+        "from",
+        "built",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9+#.:-]{2,}", text)
+        if token not in stop
+    }
+
+
+def _repo_relevance_score(repo: dict, tokens: set[str]) -> int:
+    repo_text = " ".join(
+        str(repo.get(key) or "")
+        for key in ("name", "description", "language", "topics")
+    ).lower()
+    return sum(
+        3 if token in (repo.get("name") or "").lower() else 1
+        for token in tokens
+        if token in repo_text
+    )
+
+
+def _safe_file_text(
+    owner: str, repo: str, branch: str, path: str, max_chars: int = 12000
+) -> tuple[str | None, str | None]:
+    quoted_path = "/".join(quote(part) for part in path.split("/"))
+    quoted_branch = quote(branch or "HEAD")
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{quoted_branch}/{quoted_path}"
+    try:
+        request = Request(url, headers={"User-Agent": "candidate-intelligence-agent"})
+        with urlopen(request, timeout=GITHUB_REQUEST_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("content-type", "")
+            if (
+                "text" not in content_type
+                and "json" not in content_type
+                and "xml" not in content_type
+            ):
+                return None, "not a text file"
+            return response.read(max_chars).decode("utf-8", errors="replace"), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _list_candidate_repos(selected_sources, claim, requirement):
+    tokens = _claim_tokens(claim, requirement)
+    repos, inaccessible, profiles_checked = [], [], []
+    seen = set()
+
+    for source in selected_sources:
+        parsed = _github_url_kind(source.url)
+        if not parsed:
+            inaccessible.append(
+                f"{source.url} - skipped because it is not a GitHub profile or repository URL"
+            )
+            continue
+        kind, owner, repo_name = parsed
+        try:
+            if kind == "repo":
+                repo = _github_api_get(f"/repos/{quote(owner)}/{quote(repo_name)}")
+                candidates = [repo]
+            else:
+                profiles_checked.append(f"https://github.com/{owner}")
+                candidates = _github_api_get(
+                    f"/users/{quote(owner)}/repos?per_page=100&sort=updated"
+                )
+            for repo in candidates:
+                full_name = repo.get("full_name")
+                if full_name and full_name not in seen:
+                    seen.add(full_name)
+                    repos.append(repo)
+        except HTTPError as exc:
+            inaccessible.append(f"{source.url} - GitHub API returned HTTP {exc.code}")
+        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            inaccessible.append(f"{source.url} - {exc}")
+
+    repos.sort(
+        key=lambda repo: (
+            _repo_relevance_score(repo, tokens),
+            repo.get("updated_at") or "",
+        ),
+        reverse=True,
+    )
+    return repos[:GITHUB_REPOSITORY_LIMIT], inaccessible, profiles_checked
+
+
+def _inspect_github_research(claim, requirement, selected_sources):
+    tokens = _claim_tokens(claim, requirement)
+    repos, inaccessible, profiles_checked = _list_candidate_repos(
+        selected_sources, claim, requirement
+    )
+    checked, skipped, pages, evidence = [], [], [], []
+
+    for repo in repos:
+        html_url = repo.get("html_url")
+        full_name = repo.get("full_name") or html_url
+        is_open, reason = _repo_is_open_source(repo)
+        if not is_open:
+            skipped.append(f"{html_url} - skipped: {reason}")
+            continue
+
+        owner, repo_name = full_name.split("/", 1)
+        checked.append(f"{html_url} ({reason})")
+        if repo.get("description"):
+            evidence.append(f"{html_url} description: {repo['description']}")
+        if repo.get("language"):
+            evidence.append(
+                f"{html_url} primary language reported by GitHub: {repo['language']}"
+            )
+        topics = repo.get("topics") or []
+        if topics:
+            evidence.append(
+                f"{html_url} topics reported by GitHub: {', '.join(topics[:10])}"
+            )
+
+        branch = repo.get("default_branch") or "main"
+        for path in (
+            "README.md",
+            "requirements.txt",
+            "pyproject.toml",
+            "package.json",
+            "Pipfile",
+            "composer.json",
+        ):
+            text, err = _safe_file_text(owner, repo_name, branch, path)
+            url = f"{html_url}/blob/{branch}/{path}"
+            if text:
+                pages.append(url)
+                matching = sorted(token for token in tokens if token in text.lower())[
+                    :8
+                ]
+                if matching:
+                    evidence.append(
+                        f"{url} contains claim/requirement terms: {', '.join(matching)}"
+                    )
+            elif path == "README.md" and err:
+                inaccessible.append(f"{url} - {err}")
+
+    starting = [source.url for source in selected_sources]
+    return "\n".join(
+        [
+            "1. STARTING URLS",
+            *[f"- {url}" for url in starting],
+            "2. GITHUB PROFILE(S) CHECKED",
+            *([f"- {url}" for url in profiles_checked] or ["- None"]),
+            "3. REPOSITORIES CHECKED",
+            *([f"- {item}" for item in checked] or ["- None"]),
+            "4. RELEVANT PAGES / FILES CHECKED",
+            *([f"- {item}" for item in pages] or ["- None"]),
+            "5. CONCRETE EVIDENCE FOUND",
+            *(
+                [f"- {item}" for item in evidence]
+                or [
+                    "- No concrete matching evidence found in checked open-source repositories."
+                ]
+            ),
+            "6. INACCESSIBLE PAGES",
+            *([f"- {item}" for item in inaccessible] or ["- None"]),
+            "7. REPOSITORIES SKIPPED AND WHY",
+            *([f"- {item}" for item in skipped] or ["- None"]),
+            "8. SUMMARY OF FACTUAL FINDINGS",
+            f"- Checked {len(checked)} open-source repositories and {len(pages)} repository files/pages. No final verified/unverified decision is included.",
+        ]
+    )
 
 
 def select_relevant_sources(claim, requirement, sources):
     valid_sources = [
-        source for source in sources
-        if _valid_url(source.url) and _is_github_source(source)
+        source
+        for source in sources
+        if _valid_url(source.url)
+        and _is_github_source(source)
+        and _github_url_kind(source.url)
     ]
-    
-    if not valid_sources:
-        return []
-    
-    try:
-        from services.llm_service import evaluate_url_relevance
-        urls = [source.url for source in valid_sources]
-        relevance_results = evaluate_url_relevance(claim, requirement, urls)
-        
-        relevance_map = {item["url"]: item["relevance"] for item in relevance_results}
-        
-        def combined_score(source):
-            relevance = relevance_map.get(source.url, "low")
-            keyword_score = _source_score(claim, requirement, source)
-            
-            if relevance == "high":
-                return keyword_score + 10
-            elif relevance == "medium":
-                return keyword_score + 5
-            else:
-                return keyword_score
-        
-        ranked = sorted(
-            valid_sources,
-            key=combined_score,
-            reverse=True,
-        )
-        
-        logger.info(
-            "LLM relevance filtering: %d sources evaluated, top %d selected",
-            len(valid_sources),
-            min(len(ranked), MAX_SOURCES_PER_CLAIM)
-        )
-        
-        return ranked[:MAX_SOURCES_PER_CLAIM]
-        
-    except Exception as e:
-        logger.warning("LLM relevance filtering failed, using keyword scoring: %s", e)
-        ranked = sorted(
-            valid_sources,
-            key=lambda source: _source_score(claim, requirement, source),
-            reverse=True,
-        )
-        return ranked[:MAX_SOURCES_PER_CLAIM]
+
+    ranked = sorted(
+        valid_sources,
+        key=lambda source: _source_score(claim, requirement, source),
+        reverse=True,
+    )
+    logger.info(
+        "Deterministic GitHub source filtering: %d source(s), top %d selected",
+        len(valid_sources),
+        min(len(ranked), MAX_SOURCES_PER_CLAIM),
+    )
+    return ranked[:MAX_SOURCES_PER_CLAIM]
 
 
 def _allowed_hosts(sources):
@@ -172,20 +385,24 @@ async def investigate_claim(claim, requirement, sources):
             "errors": [],
         }
 
-    task = _build_task(claim, requirement, selected_sources)
-    logger.info("Investigating claim %s with %s source(s)", claim.id, len(selected_sources))
+    logger.info(
+        "Investigating claim %s with %s deterministic GitHub source(s)",
+        claim.id,
+        len(selected_sources),
+    )
 
     try:
-        Agent, llm = _load_browser_use_agent()
-        agent = Agent(task=task, llm=llm)
-        result = await asyncio.wait_for(agent.run(), timeout=BROWSER_TIMEOUT_SECONDS)
-    except BrowserUseConfigurationError:
-        raise
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                _inspect_github_research, claim, requirement, selected_sources
+            ),
+            timeout=BROWSER_TIMEOUT_SECONDS,
+        )
     except Exception as e:
-        raise BrowserUseInvestigationError(f"Browser Use investigation failed: {e}") from e
+        raise BrowserUseInvestigationError(f"GitHub investigation failed: {e}") from e
 
     return {
-        "raw_findings": str(result),
+        "raw_findings": result,
         "sources": selected_sources,
         "errors": [],
     }
@@ -230,7 +447,9 @@ async def verify_claim(claim, requirement, sources):
     try:
         evaluation = evaluate_evidence(claim, requirement, research["raw_findings"])
     except Exception as e:
-        logger.warning("Gemini evidence evaluation failed for claim %s: %s", claim.id, e)
+        logger.warning(
+            "Gemini evidence evaluation failed for claim %s: %s", claim.id, e
+        )
         return {
             "claim_id": claim.id,
             "status": "unverified",
@@ -243,7 +462,9 @@ async def verify_claim(claim, requirement, sources):
 
     evidence_records = []
     for source in research["sources"]:
-        evidence = await _create_evidence(claim.investigation_id, claim, source, evaluation)
+        evidence = await _create_evidence(
+            claim.investigation_id, claim, source, evaluation
+        )
         evidence_records.append(evidence)
         logger.info(
             "Saved evidence %s for claim %s and source %s (status: %s)",

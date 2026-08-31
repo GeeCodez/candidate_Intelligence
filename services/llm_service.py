@@ -3,14 +3,17 @@ import logging
 import os
 import time
 from typing import Literal
+from urllib.parse import urlparse
 from threading import Lock
 
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
 
 class RateLimiter:
     def __init__(self, max_requests=100, time_window=60):
@@ -18,19 +21,24 @@ class RateLimiter:
         self.time_window = time_window
         self.requests = []
         self.lock = Lock()
-    
+
     def wait_if_needed(self):
         with self.lock:
             now = time.time()
-            self.requests = [req_time for req_time in self.requests if now - req_time < self.time_window]
-            
+            self.requests = [
+                req_time
+                for req_time in self.requests
+                if now - req_time < self.time_window
+            ]
+
             if len(self.requests) >= self.max_requests:
                 sleep_time = self.time_window - (now - self.requests[0]) + 1
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                     self.requests = []
-            
+
             self.requests.append(now)
+
 
 _rate_limiter = RateLimiter(max_requests=90, time_window=60)
 
@@ -38,7 +46,9 @@ RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "90"))
 RATE_LIMIT_TIME_WINDOW = int(os.getenv("RATE_LIMIT_TIME_WINDOW", "60"))
 
 if RATE_LIMIT_MAX_REQUESTS != 90 or RATE_LIMIT_TIME_WINDOW != 60:
-    _rate_limiter = RateLimiter(max_requests=RATE_LIMIT_MAX_REQUESTS, time_window=RATE_LIMIT_TIME_WINDOW)
+    _rate_limiter = RateLimiter(
+        max_requests=RATE_LIMIT_MAX_REQUESTS, time_window=RATE_LIMIT_TIME_WINDOW
+    )
 
 # --- LLM Configuration ---
 
@@ -47,6 +57,7 @@ LLM7_MODEL = os.getenv("LLM7_MODEL", "default")
 
 
 # --- Custom Exceptions ---
+
 
 class LLMConfigurationError(Exception):
     pass
@@ -65,6 +76,7 @@ class LLMValidationError(Exception):
 
 
 # --- Pydantic Response Models ---
+
 
 class RequirementItem(BaseModel):
     name: str = Field(description="Short name of the requirement, e.g. 'Django'")
@@ -113,8 +125,12 @@ class EvidenceDetails(BaseModel):
 
 class URLRelevanceItem(BaseModel):
     url: str = Field(description="The URL being evaluated")
-    relevance: Literal["high", "medium", "low"] = Field(description="How likely this URL contains evidence for the claim")
-    reason: str = Field(description="Brief explanation of why this URL is or isn't relevant")
+    relevance: Literal["high", "medium", "low"] = Field(
+        description="How likely this URL contains evidence for the claim"
+    )
+    reason: str = Field(
+        description="Brief explanation of why this URL is or isn't relevant"
+    )
 
 
 class EvidenceEvaluationResult(BaseModel):
@@ -164,15 +180,14 @@ Rules:
 
 # --- Prompt Builders ---
 
+
 def _build_prompt(
     cv_text: str,
     job_description: str,
     extracted_urls: list[str],
 ) -> str:
     urls_section = (
-        "\n".join(f"- {url}" for url in extracted_urls)
-        if extracted_urls
-        else "(none)"
+        "\n".join(f"- {url}" for url in extracted_urls) if extracted_urls else "(none)"
     )
 
     return f"""{SYSTEM_INSTRUCTIONS}
@@ -321,58 +336,57 @@ Rules:
 """
 
 
-
-
-
 # --- JSON Helpers ---
+
 
 def _extract_json_from_markdown(content: str) -> str:
     if not content:
         return content
-    
+
     content = content.strip()
-    
-    if content.startswith('```json'):
+
+    if content.startswith("```json"):
         content = content[7:]
-    elif content.startswith('```'):
+    elif content.startswith("```"):
         content = content[3:]
-    
-    if content.endswith('```'):
+
+    if content.endswith("```"):
         content = content[:-3]
-    
+
     return content.strip()
 
 
 def _fix_truncated_json(content: str) -> str:
     if not content:
         return content
-    
+
     content = content.strip()
-    
+
     # Count brackets to see if JSON is incomplete
-    open_braces = content.count('{')
-    close_braces = content.count('}')
-    open_brackets = content.count('[')
-    close_brackets = content.count(']')
-    
+    open_braces = content.count("{")
+    close_braces = content.count("}")
+    open_brackets = content.count("[")
+    close_brackets = content.count("]")
+
     # Add missing closing brackets
     missing_braces = open_braces - close_braces
     missing_brackets = open_brackets - close_brackets
-    
+
     fixed = content
     if missing_braces > 0:
-        fixed += '}' * missing_braces
+        fixed += "}" * missing_braces
     if missing_brackets > 0:
-        fixed += ']' * missing_brackets
-    
+        fixed += "]" * missing_brackets
+
     # Also fix common truncation patterns
-    if fixed.endswith(','):
+    if fixed.endswith(","):
         fixed = fixed[:-1]
-    
+
     return fixed
 
 
 # --- URL Helpers ---
+
 
 def _normalize_url(url: str) -> str:
     url = url.strip()
@@ -405,6 +419,7 @@ def _merge_urls(
 
 # --- API Client ---
 
+
 def _get_client() -> OpenAI:
     api_key = os.getenv("LLM7_API_KEY")
     if not api_key:
@@ -417,6 +432,7 @@ def _get_client() -> OpenAI:
 
 
 # --- Main Operations ---
+
 
 def analyze_candidate(
     cv_text: str,
@@ -475,9 +491,7 @@ def evaluate_evidence(
 ) -> dict:
 
     if not research_findings or not research_findings.strip():
-        raise LLMResponseError(
-            "Browser research findings are empty."
-        )
+        raise LLMResponseError("Browser research findings are empty.")
 
     _rate_limiter.wait_if_needed()
     client = _get_client()
@@ -508,38 +522,67 @@ def evaluate_evidence(
                     "content": prompt,
                 },
             ],
-            response_format={
-                "type": "json_object"
-            },
+            response_format={"type": "json_object"},
             temperature=0.0,
         )
 
     except Exception as e:
-        raise LLMAPIError(
-            f"LLM7 evidence evaluation failed: {e}"
-        ) from e
+        raise LLMAPIError(f"LLM7 evidence evaluation failed: {e}") from e
 
     content = response.choices[0].message.content
 
     if not content:
-        raise LLMResponseError(
-            "LLM7 returned an empty evidence response."
-        )
+        raise LLMResponseError("LLM7 returned an empty evidence response.")
 
     content = _extract_json_from_markdown(content)
-    
+
     try:
-        result = EvidenceEvaluationResult.model_validate_json(
-            content
-        )
+        result = EvidenceEvaluationResult.model_validate_json(content)
 
     except ValidationError as e:
         raise LLMValidationError(
-            f"Invalid evidence output from LLM7: {e}\n"
-            f"Raw LLM7 response: {content}"
+            f"Invalid evidence output from LLM7: {e}\n" f"Raw LLM7 response: {content}"
         ) from e
 
     return result.model_dump()
+
+
+def _deterministic_github_url_relevance(url: str, claim, requirement) -> dict:
+    """Score URL relevance without letting an LLM add, remove, or choose URLs."""
+    normalized = _normalize_url(url)
+    parsed = urlparse(normalized)
+    reason_parts = []
+    relevance = "low"
+
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com":
+        reason_parts.append("not a github.com URL")
+    else:
+        parts = [part for part in parsed.path.split("/") if part]
+        reserved = {
+            "topics",
+            "trending",
+            "marketplace",
+            "orgs",
+            "explore",
+            "features",
+            "settings",
+        }
+        if len(parts) == 1 and parts[0].lower() not in reserved:
+            relevance = "high"
+            reason_parts.append(
+                "GitHub profile URL; repositories must be discovered with deterministic GitHub rules"
+            )
+        elif len(parts) >= 2 and parts[0].lower() not in reserved:
+            relevance = "high"
+            reason_parts.append("GitHub repository URL shape")
+        else:
+            reason_parts.append("GitHub URL is not a profile or repository URL")
+
+    return {
+        "url": normalized,
+        "relevance": relevance,
+        "reason": "; ".join(reason_parts),
+    }
 
 
 def evaluate_url_relevance(
@@ -547,61 +590,18 @@ def evaluate_url_relevance(
     requirement,
     urls: list[str],
 ) -> list[dict]:
+    """Return deterministic URL relevance.
 
-    if not urls:
-        return []
-
-    _rate_limiter.wait_if_needed()
-    client = _get_client()
-
-    prompt = _build_url_relevance_prompt(
-        claim,
-        requirement,
-        urls,
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model=LLM7_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a URL relevance evaluator. "
-                        "You MUST return exactly one JSON object with a 'urls' array. "
-                        "Each item must have 'url', 'relevance', and 'reason' fields."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.0,
-        )
-    except Exception as e:
-        raise LLMAPIError(f"LLM7 URL relevance evaluation failed: {e}") from e
-
-    content = response.choices[0].message.content
-
-    if not content:
-        raise LLMResponseError("LLM7 returned an empty URL relevance response.")
-
-    content = _extract_json_from_markdown(content)
-    
-    try:
-        data = json.loads(content)
-        if "urls" not in data:
-            raise LLMResponseError("Response missing 'urls' field")
-        
-        validated = []
-        for item in data["urls"]:
+    This intentionally does not call LLM7: source URLs are security-sensitive and
+    must not be selected, expanded, or rewritten by a model. Browser research then
+    validates GitHub profile/repository shape and open-source repository license
+    before inspecting any repository content.
+    """
+    validated = []
+    seen = set()
+    for url in urls:
+        item = _deterministic_github_url_relevance(url, claim, requirement)
+        if item["url"] and item["url"] not in seen:
+            seen.add(item["url"])
             validated.append(URLRelevanceItem.model_validate(item).model_dump())
-        
-        return validated
-    except (json.JSONDecodeError, ValidationError) as e:
-        raise LLMValidationError(
-            f"Invalid URL relevance output from LLM7: {e}\n"
-            f"Raw LLM7 response: {content}"
-        ) from e
+    return validated
