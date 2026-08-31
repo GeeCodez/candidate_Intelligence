@@ -6,7 +6,7 @@ from services.browser_service import verify_claim
 
 
 class Command(BaseCommand):
-    help = "Run Browser Use + Gemini verification for one candidate claim."
+    help = "Run MultiOn + Gemini verification for one candidate claim."
 
     def add_arguments(self, parser):
         parser.add_argument("claim_id", type=int)

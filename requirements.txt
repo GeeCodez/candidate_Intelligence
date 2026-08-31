@@ -4,4 +4,4 @@ pydantic
 PyMuPDF
 python-dotenv
 asgiref
-browser-use
+multion
