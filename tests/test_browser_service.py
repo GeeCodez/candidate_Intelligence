@@ -1,6 +1,16 @@
+import os
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+
+import django
+django.setup()
+
 from types import SimpleNamespace
 
-from services.browser_service import select_relevant_sources
+from services.browser_service import (
+    _format_multion_findings,
+    select_relevant_sources,
+)
 
 
 def test_select_relevant_sources_prefers_github_for_django_claim():
@@ -18,3 +28,19 @@ def test_select_relevant_sources_prefers_github_for_django_claim():
         "https://github.com/example",
         "https://linkedin.com/in/example",
     ]
+
+
+def test_format_multion_findings_includes_steps_and_messages():
+    findings = _format_multion_findings([
+        {
+            "status": "DONE",
+            "url": "https://github.com/example",
+            "session_id": "session-1",
+            "message": "Found a Django project in the README.",
+        }
+    ])
+
+    assert "MultiOn step 1" in findings
+    assert "Status: DONE" in findings
+    assert "URL: https://github.com/example" in findings
+    assert "Found a Django project" in findings

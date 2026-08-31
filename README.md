@@ -15,3 +15,8 @@ The agent:
 9. Produces an evidence-backed candidate assessment.
 
 The system **shows the evidence behind its assessment**, rather than simply generating a match score.
+
+
+## Web investigation provider
+
+Claim verification uses MultiOn to browse candidate-provided public URLs and collect raw findings for Gemini evaluation. Configure `MULTION_API_KEY` in the environment before running verification.
