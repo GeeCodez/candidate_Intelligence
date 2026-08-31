@@ -488,8 +488,6 @@ def evaluate_evidence(
         research_findings,
     )
 
-    schema = EvidenceEvaluationResult.model_json_schema()
-
     try:
         response = client.chat.completions.create(
             model=LLM7_MODEL,
@@ -507,11 +505,7 @@ def evaluate_evidence(
                 },
                 {
                     "role": "user",
-                    "content": (
-                        f"{prompt}\n\n"
-                        "IMPORTANT: Return exactly this JSON structure:\n"
-                        f"{schema}"
-                    ),
+                    "content": prompt,
                 },
             ],
             response_format={
