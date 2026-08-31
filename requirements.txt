@@ -1,6 +1,7 @@
 Django
 google-genai
 pydantic
+pydantic-settings
 PyMuPDF
 python-dotenv
 asgiref

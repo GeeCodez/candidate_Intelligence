@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 
 from asgiref.sync import sync_to_async
 from dotenv import load_dotenv
-from openai import OpenAI as OpenAIClient
 load_dotenv()
 
 from core.models import Evidence
@@ -145,77 +144,22 @@ def _load_browser_use_agent():
         raise BrowserUseConfigurationError(
             "LLM7_API_KEY environment variable is not set."
         )
-    
+
     browser_use = importlib.import_module("browser_use")
     Agent = getattr(browser_use, "Agent")
-    
-    # Create custom LLM7 provider since browser_use doesn't have OpenAI provider
-    class LLM7Provider:
-        """Custom LLM provider for browser_use using LLM7 instead of Gemini"""
-        def __init__(self, api_key, base_url, model):
-            self.client = OpenAIClient(
-                api_key=api_key,
-                base_url=base_url,
-            )
-            self.model = model
-            self.model_name = model  # browser_use expects model_name
-            self.name = "LLM7"
-            # Add provider attribute that browser_use expects
-            self.provider = "openai"  # Tell browser_use we're using OpenAI-compatible API
-        
-        async def ainvoke(self, messages, *args, **kwargs):
-            """Async invoke method expected by browser_use (BaseChatModel interface)"""
-            # Filter out unsupported kwargs that browser_use passes but OpenAI doesn't accept
-            unsupported_kwargs = ['session_id', 'session', 'metadata', 'response_format']
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k not in unsupported_kwargs}
-            
-            try:
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        **filtered_kwargs
-                    )
-                )
-                
-                # Return a response object that browser_use expects with usage attribute
-                class LLM7Response:
-                    def __init__(self, content, usage=None):
-                        self.content = content
-                        self.usage = usage or {}
-                
-                usage = {
-                    'prompt_tokens': response.usage.prompt_tokens if response.usage else 0,
-                    'completion_tokens': response.usage.completion_tokens if response.usage else 0,
-                    'total_tokens': response.usage.total_tokens if response.usage else 0
-                }
-                
-                return LLM7Response(
-                    content=response.choices[0].message.content,
-                    usage=usage
-                )
-            except Exception as e:
-                # Log the error for debugging
-                logger.error(f"LLM7 API error: {str(e)}")
-                # Return a fallback response to prevent agent from crashing
-                class LLM7Response:
-                    def __init__(self, content, usage=None):
-                        self.content = content
-                        self.usage = usage or {}
-                
-                return LLM7Response(
-                    content=f"Error: Unable to process request due to API error: {str(e)}",
-                    usage={}
-                )
-    
-    llm = LLM7Provider(
+
+    chat_module = importlib.import_module("browser_use.llm.openai.chat")
+    ChatOpenAI = getattr(chat_module, "ChatOpenAI")
+
+    llm = ChatOpenAI(
+        model=os.getenv("LLM7_MODEL", "default"),
         api_key=os.getenv("LLM7_API_KEY"),
         base_url="https://api.llm7.io/v1",
-        model=os.getenv("LLM7_MODEL", "default"),
+        temperature=0.0,
+        max_completion_tokens=4096,
+        dont_force_structured_output=True,
     )
-    
+
     return Agent, llm
 
 
