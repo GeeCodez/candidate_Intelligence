@@ -46,12 +46,50 @@ def _source_score(claim, requirement, source):
 
 def select_relevant_sources(claim, requirement, sources):
     valid_sources = [source for source in sources if _valid_url(source.url)]
-    ranked = sorted(
-        valid_sources,
-        key=lambda source: _source_score(claim, requirement, source),
-        reverse=True,
-    )
-    return ranked[:MAX_SOURCES_PER_CLAIM]
+    
+    if not valid_sources:
+        return []
+    
+    try:
+        from services.llm_service import evaluate_url_relevance
+        urls = [source.url for source in valid_sources]
+        relevance_results = evaluate_url_relevance(claim, requirement, urls)
+        
+        relevance_map = {item["url"]: item["relevance"] for item in relevance_results}
+        
+        def combined_score(source):
+            relevance = relevance_map.get(source.url, "low")
+            keyword_score = _source_score(claim, requirement, source)
+            
+            if relevance == "high":
+                return keyword_score + 10
+            elif relevance == "medium":
+                return keyword_score + 5
+            else:
+                return keyword_score
+        
+        ranked = sorted(
+            valid_sources,
+            key=combined_score,
+            reverse=True,
+        )
+        
+        logger.info(
+            "LLM relevance filtering: %d sources evaluated, top %d selected",
+            len(valid_sources),
+            min(len(ranked), MAX_SOURCES_PER_CLAIM)
+        )
+        
+        return ranked[:MAX_SOURCES_PER_CLAIM]
+        
+    except Exception as e:
+        logger.warning("LLM relevance filtering failed, using keyword scoring: %s", e)
+        ranked = sorted(
+            valid_sources,
+            key=lambda source: _source_score(claim, requirement, source),
+            reverse=True,
+        )
+        return ranked[:MAX_SOURCES_PER_CLAIM]
 
 
 def _allowed_hosts(sources):
@@ -183,16 +221,16 @@ async def verify_claim(claim, requirement, sources):
     logger.info("Gemini evaluation for claim %s: %s", claim.id, json.dumps(evaluation))
 
     evidence_records = []
-    if evaluation["status"] == "verified":
-        for source in research["sources"]:
-            evidence = await _create_evidence(claim.investigation, claim, source, evaluation)
-            evidence_records.append(evidence)
-            logger.info(
-                "Saved evidence %s for claim %s and source %s",
-                evidence.id,
-                claim.id,
-                source.id,
-            )
+    for source in research["sources"]:
+        evidence = await _create_evidence(claim.investigation, claim, source, evaluation)
+        evidence_records.append(evidence)
+        logger.info(
+            "Saved evidence %s for claim %s and source %s (status: %s)",
+            evidence.id,
+            claim.id,
+            source.id,
+            evaluation["status"],
+        )
 
     return {
         "claim_id": claim.id,

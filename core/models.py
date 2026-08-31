@@ -10,7 +10,7 @@ class Investigation(models.Model):
     ]
 
     candidate_name = models.CharField(max_length=255)
-    cv_details = models.TextField(blank=True,null=True)
+    cv_details = models.TextField(blank=True, null=True)
     job_description = models.TextField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)

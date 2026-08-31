@@ -69,11 +69,12 @@ body {
 .btn-ghost {
     color: theme('colors.on-surface-variant');
     background: transparent;
-    transition: color 0.2s;
+    transition: all 0.2s;
 }
 
 .btn-ghost:hover { 
-    color: theme('colors.primary'); 
+    color: theme('colors.primary');
+    background-color: theme('colors.surface-container-low');
 }
 
 .accordion-content { 
@@ -173,4 +174,13 @@ body {
     animation-delay: 0.3s; 
     opacity: 0; 
     animation-fill-mode: forwards; 
+}
+
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
