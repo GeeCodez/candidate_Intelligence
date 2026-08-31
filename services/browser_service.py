@@ -6,14 +6,15 @@ import os
 from urllib.parse import urlparse
 
 from asgiref.sync import sync_to_async
+from dotenv import load_dotenv
+from openai import OpenAI as OpenAIClient
+load_dotenv()
 
 from core.models import Evidence
 
 logger = logging.getLogger(__name__)
 
 MAX_SOURCES_PER_CLAIM = 5
-MAX_GITHUB_REPOS_PER_CLAIM = 20
-MIN_GITHUB_REPOS_WHEN_AVAILABLE = 2
 BROWSER_TIMEOUT_SECONDS = int(os.getenv("BROWSER_USE_TIMEOUT_SECONDS", "150"))
 
 
@@ -114,7 +115,7 @@ def _allowed_hosts(sources):
 def _build_task(claim, requirement, sources):
     source_lines = "\n".join(f"- {source.url}" for source in sources)
     hosts = ", ".join(_allowed_hosts(sources))
-    return f"""Investigate a candidate claim using only the supplied public GitHub sources and public GitHub repositories.
+    return f"""Investigate a candidate claim using only the supplied public sources and relevant linked pages.
 
 Claim: {claim.claim}
 Requirement: {requirement.name} - {requirement.description or ''}
@@ -123,32 +124,56 @@ Allowed starting URLs:
 Allowed domains: {hosts}
 
 Rules:
-- Search and browse only GitHub public repositories belonging to the prospective developer.
-- Do not use general web search, non-GitHub domains, private repositories, deleted repositories, or unrelated GitHub users/organizations.
-- If a supplied URL is a GitHub profile, inspect public repositories from that profile.
-- Check up to {MAX_GITHUB_REPOS_PER_CLAIM} public repositories total, prioritizing repositories whose names, descriptions, README files, languages, or code appear relevant to the claim.
-- If the candidate has at least {MIN_GITHUB_REPOS_WHEN_AVAILABLE} public repositories, check a minimum of {MIN_GITHUB_REPOS_WHEN_AVAILABLE} before concluding evidence is absent.
-- Keep the investigation within 2 minutes 30 seconds.
-- In each repository, prefer quick checks of README files, repository language metadata, dependency manifests, configuration files, and targeted code search for technologies named in the claim.
-- Avoid duplicate URLs and skip inaccessible, private, deleted, or irrelevant repositories after noting them.
+- Start from the supplied URLs and follow only relevant internal links, sub-pages, GitHub repositories, README files, code files, project pages, and profile links needed to evaluate the claim.
+- Do not browse unrelated domains or perform broad web search.
+- Avoid duplicate URLs and skip inaccessible, private, deleted, or irrelevant pages after noting them.
 - Gather concrete factual findings only. Do not decide verified/unverified.
-- Do not invent evidence. If evidence is absent, say what repositories were checked.
-- Stop once enough useful evidence has been collected, {MAX_GITHUB_REPOS_PER_CLAIM} repositories have been checked, the 2 minutes 30 seconds limit is reached, or the relevant public repositories are exhausted.
+- Do not invent evidence. If evidence is absent, say what was checked.
+- Stop once enough useful evidence has been collected or the relevant sources are exhausted.
 
-Return concise raw findings with: URLs visited, public repositories checked, relevant evidence found, inaccessible/private/deleted repositories, and counts when possible.
+Return concise raw findings with: URLs visited, pages/repositories checked, relevant evidence found, inaccessible pages, and counts when possible.
 """
 
 
 def _load_browser_use_agent():
-    if not os.getenv("BROWSER_USE_API_KEY"):
+    if not os.getenv("LLM7_API_KEY"):
         raise BrowserUseConfigurationError(
-            "BROWSER_USE_API_KEY environment variable is not set."
+            "LLM7_API_KEY environment variable is not set."
         )
+    
     browser_use = importlib.import_module("browser_use")
     Agent = getattr(browser_use, "Agent")
-    llm_module = importlib.import_module("browser_use.llm")
-    ChatGoogle = getattr(llm_module, "ChatGoogle")
-    return Agent, ChatGoogle
+    
+    # Create custom LLM7 provider since browser_use doesn't have OpenAI provider
+    class LLM7Provider:
+        """Custom LLM provider for browser_use using LLM7 instead of Gemini"""
+        def __init__(self, api_key, base_url, model):
+            self.client = OpenAIClient(
+                api_key=api_key,
+                base_url=base_url,
+            )
+            self.model = model
+        
+        async def acompletion(self, messages, **kwargs):
+            """Async completion method expected by browser_use"""
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    **kwargs
+                )
+            )
+            return response
+    
+    llm = LLM7Provider(
+        api_key=os.getenv("LLM7_API_KEY"),
+        base_url="https://api.llm7.io/v1",
+        model=os.getenv("LLM7_MODEL", "default"),
+    )
+    
+    return Agent, llm
 
 
 async def investigate_claim(claim, requirement, sources):
@@ -164,13 +189,7 @@ async def investigate_claim(claim, requirement, sources):
     logger.info("Investigating claim %s with %s source(s)", claim.id, len(selected_sources))
 
     try:
-        Agent, ChatGoogle = _load_browser_use_agent()
-        llm = ChatGoogle(
-            model=os.getenv(
-                "BROWSER_USE_GEMINI_MODEL",
-                os.getenv("GEMINI_MODEL", "gemini-3-flash-preview"),
-            )
-        )
+        Agent, llm = _load_browser_use_agent()
         agent = Agent(task=task, llm=llm)
         result = await asyncio.wait_for(agent.run(), timeout=BROWSER_TIMEOUT_SECONDS)
     except BrowserUseConfigurationError:
