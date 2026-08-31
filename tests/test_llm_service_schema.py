@@ -43,3 +43,16 @@ def test_candidate_analysis_prompt_documents_required_nested_fields():
     assert '"description": "Experience building applications with Django"' in prompt
     assert '"requirement": "Django"' in prompt
     assert '"source_from_cv"' in prompt
+
+
+def test_evidence_prompt_uses_instance_shape_not_json_schema():
+    from services.llm_service import _build_evidence_prompt
+
+    claim = type("Claim", (), {"claim": "Candidate documented APIs with Swagger."})()
+    requirement = type("Requirement", (), {"name": "OpenAPI", "description": "API docs"})()
+
+    prompt = _build_evidence_prompt(claim, requirement, "No public evidence found.")
+
+    assert '"finding": "A concise explanation of what the evidence shows"' in prompt
+    assert '"$defs"' not in prompt
+    assert '"properties"' not in prompt

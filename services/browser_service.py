@@ -124,12 +124,16 @@ Allowed starting URLs:
 Allowed domains: {hosts}
 
 Rules:
-- Start from the supplied URLs and follow only relevant internal links, sub-pages, GitHub repositories, README files, code files, project pages, and profile links needed to evaluate the claim.
+- Investigate only GitHub public repositories from the supplied URLs.
+- Start from the supplied URLs and follow only relevant GitHub internal links, repositories, README files, code files, project pages, and profile links needed to evaluate the claim.
 - Do not browse unrelated domains or perform broad web search.
+- Do not use general web search.
+- Check up to 20 public repositories total, and for profile pages check a minimum of 2 relevant repositories when available.
+- Complete the investigation within 2 minutes 30 seconds.
 - Avoid duplicate URLs and skip inaccessible, private, deleted, or irrelevant pages after noting them.
 - Gather concrete factual findings only. Do not decide verified/unverified.
 - Do not invent evidence. If evidence is absent, say what was checked.
-- Stop once enough useful evidence has been collected or the relevant sources are exhausted.
+- Stop once enough useful evidence has been collected, the relevant sources are exhausted, or the time/repository limits are reached.
 
 Return concise raw findings with: URLs visited, pages/repositories checked, relevant evidence found, inaccessible pages, and counts when possible.
 """
@@ -204,9 +208,9 @@ async def investigate_claim(claim, requirement, sources):
     }
 
 
-async def _create_evidence(investigation, claim, source, evaluation):
+async def _create_evidence(investigation_id, claim, source, evaluation):
     return await sync_to_async(Evidence.objects.create)(
-        investigation=investigation,
+        investigation_id=investigation_id,
         claim=claim,
         source=source,
         finding=evaluation["finding"],
@@ -256,7 +260,7 @@ async def verify_claim(claim, requirement, sources):
 
     evidence_records = []
     for source in research["sources"]:
-        evidence = await _create_evidence(claim.investigation, claim, source, evaluation)
+        evidence = await _create_evidence(claim.investigation_id, claim, source, evaluation)
         evidence_records.append(evidence)
         logger.info(
             "Saved evidence %s for claim %s and source %s (status: %s)",
