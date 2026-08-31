@@ -83,6 +83,7 @@ LLM7_MODEL = os.getenv(
 # EXCEPTIONS
 # ============================================================
 
+
 class LLMConfigurationError(Exception):
     pass
 
@@ -102,6 +103,7 @@ class LLMValidationError(Exception):
 # ============================================================
 # RESPONSE MODELS
 # ============================================================
+
 
 class RequirementItem(BaseModel):
     name: str = Field(
@@ -253,6 +255,7 @@ requirements
 claims
 urls
 """
+
 
 
 def _build_prompt(
@@ -438,6 +441,7 @@ def _parse_json(content: str) -> dict:
 # URL HELPERS
 # ============================================================
 
+
 def _normalize_url(url: str) -> str:
     url = url.strip()
 
@@ -476,6 +480,7 @@ def _merge_urls(
 # API CLIENT
 # ============================================================
 
+
 def _get_client() -> OpenAI:
 
     api_key = os.getenv("LLM7_API_KEY")
@@ -494,6 +499,7 @@ def _get_client() -> OpenAI:
 # ============================================================
 # CANDIDATE EXTRACTION
 # ============================================================
+
 
 def analyze_candidate(
     cv_text: str,
@@ -641,9 +647,7 @@ Do not perform additional research.
                     "content": prompt,
                 },
             ],
-            response_format={
-                "type": "json_object"
-            },
+            response_format={"type": "json_object"},
             temperature=0.0,
             max_tokens=2000,
         )
@@ -657,9 +661,7 @@ Do not perform additional research.
     content = response.choices[0].message.content
 
     if not content:
-        raise LLMResponseError(
-            "LLM7 returned an empty evidence response."
-        )
+        raise LLMResponseError("LLM7 returned an empty evidence response.")
 
     try:
 

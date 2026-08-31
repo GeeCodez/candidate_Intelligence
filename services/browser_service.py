@@ -2,7 +2,10 @@ import asyncio
 import importlib
 import logging
 import os
-from urllib.parse import urlparse
+import re
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 from asgiref.sync import sync_to_async
 from dotenv import load_dotenv
@@ -61,6 +64,27 @@ def _valid_url(url):
         parsed.scheme in {"http", "https"}
         and bool(parsed.netloc)
     )
+
+
+def _github_headers():
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "candidate-intelligence-agent",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_api_get(path: str):
+    request = Request(
+        f"https://api.github.com{path}",
+        headers=_github_headers(),
+    )
+    with urlopen(request, timeout=GITHUB_REQUEST_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def _is_github_source(source):
