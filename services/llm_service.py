@@ -264,8 +264,8 @@ Rules:
 - Do NOT invent technologies.
 - Do NOT invent employers.
 - Do NOT invent counts.
-- "verified" means the public evidence sufficiently supports the claim.
-- "unverified" means the available public evidence is insufficient.
+- "verified" means public GitHub repository evidence sufficiently supports the claim.
+- "unverified" means the available public GitHub repository evidence is insufficient.
 - "unverified" does NOT mean the claim is false.
 - Do NOT return a "findings" array.
 - Do NOT return multiple results.
@@ -310,9 +310,9 @@ Return EXACTLY ONE JSON OBJECT with this structure:
 Rules:
 
 - "relevance" MUST be exactly one of: "high", "medium", "low".
-- "high" = very likely to contain relevant evidence (e.g., GitHub for tech claims, portfolio for design)
-- "medium" = might contain some relevant information
-- "low" = unlikely to contain evidence for this specific claim (e.g., checking a general company website for Java experience)
+- "high" = GitHub profile or repository likely to contain public code evidence for tech claims
+- "medium" = GitHub URL that might contain relevant public code evidence
+- "low" = non-GitHub URL or GitHub URL unlikely to contain evidence for this specific claim
 - Be conservative - if uncertain, use "medium" or "low"
 - Do NOT visit the URLs.
 - Base judgment only on the URL itself.

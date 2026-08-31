@@ -12,7 +12,9 @@ from core.models import Evidence
 logger = logging.getLogger(__name__)
 
 MAX_SOURCES_PER_CLAIM = 5
-BROWSER_TIMEOUT_SECONDS = int(os.getenv("BROWSER_USE_TIMEOUT_SECONDS", "180"))
+MAX_GITHUB_REPOS_PER_CLAIM = 20
+MIN_GITHUB_REPOS_WHEN_AVAILABLE = 2
+BROWSER_TIMEOUT_SECONDS = int(os.getenv("BROWSER_USE_TIMEOUT_SECONDS", "150"))
 
 
 class BrowserUseConfigurationError(Exception):
@@ -44,8 +46,16 @@ def _source_score(claim, requirement, source):
     return score
 
 
+def _is_github_source(source):
+    host = urlparse(source.url).netloc.lower()
+    return host == "github.com" or host.endswith(".github.com")
+
+
 def select_relevant_sources(claim, requirement, sources):
-    valid_sources = [source for source in sources if _valid_url(source.url)]
+    valid_sources = [
+        source for source in sources
+        if _valid_url(source.url) and _is_github_source(source)
+    ]
     
     if not valid_sources:
         return []
@@ -104,7 +114,7 @@ def _allowed_hosts(sources):
 def _build_task(claim, requirement, sources):
     source_lines = "\n".join(f"- {source.url}" for source in sources)
     hosts = ", ".join(_allowed_hosts(sources))
-    return f"""Investigate a candidate claim using only the supplied public sources and relevant linked pages.
+    return f"""Investigate a candidate claim using only the supplied public GitHub sources and public GitHub repositories.
 
 Claim: {claim.claim}
 Requirement: {requirement.name} - {requirement.description or ''}
@@ -113,14 +123,19 @@ Allowed starting URLs:
 Allowed domains: {hosts}
 
 Rules:
-- Start from the supplied URLs and follow only relevant internal links, sub-pages, GitHub repositories, README files, code files, project pages, and profile links needed to evaluate the claim.
-- Do not browse unrelated domains or perform broad web search.
-- Avoid duplicate URLs and skip inaccessible, private, deleted, or irrelevant pages after noting them.
+- Search and browse only GitHub public repositories belonging to the prospective developer.
+- Do not use general web search, non-GitHub domains, private repositories, deleted repositories, or unrelated GitHub users/organizations.
+- If a supplied URL is a GitHub profile, inspect public repositories from that profile.
+- Check up to {MAX_GITHUB_REPOS_PER_CLAIM} public repositories total, prioritizing repositories whose names, descriptions, README files, languages, or code appear relevant to the claim.
+- If the candidate has at least {MIN_GITHUB_REPOS_WHEN_AVAILABLE} public repositories, check a minimum of {MIN_GITHUB_REPOS_WHEN_AVAILABLE} before concluding evidence is absent.
+- Keep the investigation within 2 minutes 30 seconds.
+- In each repository, prefer quick checks of README files, repository language metadata, dependency manifests, configuration files, and targeted code search for technologies named in the claim.
+- Avoid duplicate URLs and skip inaccessible, private, deleted, or irrelevant repositories after noting them.
 - Gather concrete factual findings only. Do not decide verified/unverified.
-- Do not invent evidence. If evidence is absent, say what was checked.
-- Stop once enough useful evidence has been collected or the relevant sources are exhausted.
+- Do not invent evidence. If evidence is absent, say what repositories were checked.
+- Stop once enough useful evidence has been collected, {MAX_GITHUB_REPOS_PER_CLAIM} repositories have been checked, the 2 minutes 30 seconds limit is reached, or the relevant public repositories are exhausted.
 
-Return concise raw findings with: URLs visited, pages/repositories checked, relevant evidence found, inaccessible pages, and counts when possible.
+Return concise raw findings with: URLs visited, public repositories checked, relevant evidence found, inaccessible/private/deleted repositories, and counts when possible.
 """
 
 
