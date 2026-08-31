@@ -6,7 +6,7 @@ from typing import Literal
 from threading import Lock
 
 from openai import OpenAI
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -68,14 +68,41 @@ class LLMValidationError(Exception):
 
 class RequirementItem(BaseModel):
     name: str = Field(description="Short name of the requirement, e.g. 'Django'")
-    description: str = Field(description="What the requirement entails")
+    description: str = Field(
+        default="",
+        description="What the requirement entails",
+    )
     importance: Literal["high", "medium", "low"]
 
 
 class ClaimItem(BaseModel):
     requirement: str = Field(description="Name of the matched requirement")
     claim: str = Field(description="What the candidate claims, supported by the CV")
-    source_from_cv: str = Field(description="Excerpt from the CV that supports this claim")
+    source_from_cv: str = Field(
+        default="",
+        description="Excerpt from the CV that supports this claim",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_claim_keys(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        normalized = data.copy()
+        if "requirement" not in normalized and "name" in normalized:
+            normalized["requirement"] = normalized["name"]
+
+        if "source_from_cv" not in normalized:
+            for fallback_key in ("source", "evidence", "cv_source"):
+                if fallback_key in normalized:
+                    normalized["source_from_cv"] = normalized[fallback_key]
+                    break
+
+        if "source_from_cv" not in normalized:
+            normalized["source_from_cv"] = normalized.get("claim", "")
+
+        return normalized
 
 
 class EvidenceDetails(BaseModel):
@@ -126,6 +153,9 @@ Rules:
 - Do not invent requirements, claims, or URLs.
 - Do not verify whether claims are true.
 - Use only high, medium, or low for requirement importance.
+- Every requirement object MUST include: name, description, importance.
+- Every claim object MUST include: requirement, claim, source_from_cv.
+- Do NOT use name instead of requirement inside claim objects.
 - Return ONLY valid JSON.
 - The JSON must contain exactly these top-level fields:
   requirements, claims, urls.
@@ -158,6 +188,25 @@ def _build_prompt(
 ## Pre-extracted URLs from PDF
 
 {urls_section}
+
+Return JSON in this exact shape:
+{{
+  "requirements": [
+    {{
+      "name": "Django",
+      "description": "Experience building applications with Django",
+      "importance": "high"
+    }}
+  ],
+  "claims": [
+    {{
+      "requirement": "Django",
+      "claim": "Candidate built a booking engine using Django",
+      "source_from_cv": "Engineered a web-based accommodation booking engine using Python (Django)"
+    }}
+  ],
+  "urls": ["https://github.com/example"]
+}}
 """
 
 
