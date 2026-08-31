@@ -1,6 +1,5 @@
 import asyncio
 import importlib
-import json
 import logging
 import os
 import re
@@ -11,18 +10,38 @@ from urllib.request import Request, urlopen
 from asgiref.sync import sync_to_async
 from dotenv import load_dotenv
 
-load_dotenv()
-
 from core.models import Evidence
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-MAX_SOURCES_PER_CLAIM = 5
-GITHUB_REPOSITORY_LIMIT = int(os.getenv("GITHUB_REPOSITORY_LIMIT", "20"))
-GITHUB_REQUEST_TIMEOUT_SECONDS = int(os.getenv("GITHUB_REQUEST_TIMEOUT_SECONDS", "12"))
-BROWSER_TIMEOUT_SECONDS = int(os.getenv("BROWSER_USE_TIMEOUT_SECONDS", "150"))
-LLM7_MODEL = os.getenv("LLM7_MODEL", "default")
 
+# ============================================================
+# Configuration
+# ============================================================
+
+MAX_SOURCES_PER_CLAIM = int(
+    os.getenv("MAX_SOURCES_PER_CLAIM", "5")
+)
+
+MAX_REPOSITORIES_PER_CLAIM = int(
+    os.getenv("MAX_REPOSITORIES_PER_CLAIM", "20")
+)
+
+BROWSER_TIMEOUT_SECONDS = int(
+    os.getenv("BROWSER_USE_TIMEOUT_SECONDS", "150")
+)
+
+LLM7_MODEL = os.getenv(
+    "LLM7_MODEL",
+    "default",
+)
+
+
+# ============================================================
+# Exceptions
+# ============================================================
 
 class BrowserUseConfigurationError(Exception):
     pass
@@ -32,25 +51,19 @@ class BrowserUseInvestigationError(Exception):
     pass
 
 
+# ============================================================
+# URL Helpers
+# ============================================================
+
 def _valid_url(url):
-    parsed = urlparse((url or "").strip())
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    parsed = urlparse(
+        (url or "").strip()
+    )
 
-
-def _source_score(claim, requirement, source):
-    text = f"{claim.claim} {requirement.name} {requirement.description or ''}".lower()
-    url = source.url.lower()
-    title = (source.title or "").lower()
-    source_type = (source.source_type or "").lower()
-    score = 0
-    if source_type == "github" or "github.com" in url:
-        score += 5
-    if source_type in {"portfolio", "website"}:
-        score += 2
-    for token in set(text.replace("/", " ").replace("-", " ").split()):
-        if len(token) > 3 and (token in url or token in title):
-            score += 1
-    return score
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+    )
 
 
 def _github_headers():
@@ -75,381 +88,590 @@ def _github_api_get(path: str):
 
 
 def _is_github_source(source):
-    host = urlparse(source.url).netloc.lower()
-    return host == "github.com"
+    if not _valid_url(source.url):
+        return False
 
+    host = urlparse(
+        source.url
+    ).netloc.lower()
 
-def _github_url_kind(url: str):
-    """Return ('profile', owner, None) or ('repo', owner, repo) for safe GitHub URLs."""
-    parsed = urlparse((url or "").strip())
-    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com":
-        return None
-
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) == 1 and re.fullmatch(r"[A-Za-z0-9_.-]+", parts[0]):
-        return ("profile", parts[0], None)
-    if len(parts) >= 2 and all(
-        re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts[:2]
-    ):
-        if parts[0].lower() not in {
-            "topics",
-            "trending",
-            "marketplace",
-            "orgs",
-            "explore",
-            "features",
-            "settings",
-        }:
-            return ("repo", parts[0], parts[1])
-    return None
-
-
-def _repo_is_open_source(repo: dict) -> tuple[bool, str]:
-    if repo.get("private") is True:
-        return False, "repository is private"
-    license_info = repo.get("license") or {}
-    spdx_id = license_info.get("spdx_id")
-    license_name = license_info.get("name")
-    if not spdx_id or spdx_id == "NOASSERTION":
-        return False, "no recognized open-source license is reported by GitHub"
-    return True, f"license: {spdx_id or license_name}"
-
-
-def _claim_tokens(claim, requirement):
-    text = f"{getattr(claim, 'claim', '')} {getattr(requirement, 'name', '')} {getattr(requirement, 'description', '') or ''}".lower()
-    stop = {
-        "candidate",
-        "experience",
-        "using",
-        "with",
-        "that",
-        "this",
-        "have",
-        "has",
-        "and",
-        "the",
-        "for",
-        "from",
-        "built",
-    }
-    return {
-        token
-        for token in re.findall(r"[a-z0-9][a-z0-9+#.:-]{2,}", text)
-        if token not in stop
-    }
-
-
-def _repo_relevance_score(repo: dict, tokens: set[str]) -> int:
-    repo_text = " ".join(
-        str(repo.get(key) or "")
-        for key in ("name", "description", "language", "topics")
-    ).lower()
-    return sum(
-        3 if token in (repo.get("name") or "").lower() else 1
-        for token in tokens
-        if token in repo_text
+    return (
+        host == "github.com"
+        or host.endswith(".github.com")
     )
 
 
-def _safe_file_text(
-    owner: str, repo: str, branch: str, path: str, max_chars: int = 12000
-) -> tuple[str | None, str | None]:
-    quoted_path = "/".join(quote(part) for part in path.split("/"))
-    quoted_branch = quote(branch or "HEAD")
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{quoted_branch}/{quoted_path}"
-    try:
-        request = Request(url, headers={"User-Agent": "candidate-intelligence-agent"})
-        with urlopen(request, timeout=GITHUB_REQUEST_TIMEOUT_SECONDS) as response:
-            content_type = response.headers.get("content-type", "")
-            if (
-                "text" not in content_type
-                and "json" not in content_type
-                and "xml" not in content_type
-            ):
-                return None, "not a text file"
-            return response.read(max_chars).decode("utf-8", errors="replace"), None
-    except Exception as exc:
-        return None, str(exc)
-
-
-def _list_candidate_repos(selected_sources, claim, requirement):
-    tokens = _claim_tokens(claim, requirement)
-    repos, inaccessible, profiles_checked = [], [], []
-    seen = set()
-
-    for source in selected_sources:
-        parsed = _github_url_kind(source.url)
-        if not parsed:
-            inaccessible.append(
-                f"{source.url} - skipped because it is not a GitHub profile or repository URL"
+def _github_url(url):
+    return (
+        _valid_url(url)
+        and (
+            urlparse(url).netloc.lower() == "github.com"
+            or urlparse(url).netloc.lower().endswith(
+                ".github.com"
             )
-            continue
-        kind, owner, repo_name = parsed
-        try:
-            if kind == "repo":
-                repo = _github_api_get(f"/repos/{quote(owner)}/{quote(repo_name)}")
-                candidates = [repo]
-            else:
-                profiles_checked.append(f"https://github.com/{owner}")
-                candidates = _github_api_get(
-                    f"/users/{quote(owner)}/repos?per_page=100&sort=updated"
-                )
-            for repo in candidates:
-                full_name = repo.get("full_name")
-                if full_name and full_name not in seen:
-                    seen.add(full_name)
-                    repos.append(repo)
-        except HTTPError as exc:
-            inaccessible.append(f"{source.url} - GitHub API returned HTTP {exc.code}")
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
-            inaccessible.append(f"{source.url} - {exc}")
-
-    repos.sort(
-        key=lambda repo: (
-            _repo_relevance_score(repo, tokens),
-            repo.get("updated_at") or "",
-        ),
-        reverse=True,
-    )
-    return repos[:GITHUB_REPOSITORY_LIMIT], inaccessible, profiles_checked
-
-
-def _inspect_github_research(claim, requirement, selected_sources):
-    tokens = _claim_tokens(claim, requirement)
-    repos, inaccessible, profiles_checked = _list_candidate_repos(
-        selected_sources, claim, requirement
-    )
-    checked, skipped, pages, evidence = [], [], [], []
-
-    for repo in repos:
-        html_url = repo.get("html_url")
-        full_name = repo.get("full_name") or html_url
-        is_open, reason = _repo_is_open_source(repo)
-        if not is_open:
-            skipped.append(f"{html_url} - skipped: {reason}")
-            continue
-
-        owner, repo_name = full_name.split("/", 1)
-        checked.append(f"{html_url} ({reason})")
-        if repo.get("description"):
-            evidence.append(f"{html_url} description: {repo['description']}")
-        if repo.get("language"):
-            evidence.append(
-                f"{html_url} primary language reported by GitHub: {repo['language']}"
-            )
-        topics = repo.get("topics") or []
-        if topics:
-            evidence.append(
-                f"{html_url} topics reported by GitHub: {', '.join(topics[:10])}"
-            )
-
-        branch = repo.get("default_branch") or "main"
-        for path in (
-            "README.md",
-            "requirements.txt",
-            "pyproject.toml",
-            "package.json",
-            "Pipfile",
-            "composer.json",
-        ):
-            text, err = _safe_file_text(owner, repo_name, branch, path)
-            url = f"{html_url}/blob/{branch}/{path}"
-            if text:
-                pages.append(url)
-                matching = sorted(token for token in tokens if token in text.lower())[
-                    :8
-                ]
-                if matching:
-                    evidence.append(
-                        f"{url} contains claim/requirement terms: {', '.join(matching)}"
-                    )
-            elif path == "README.md" and err:
-                inaccessible.append(f"{url} - {err}")
-
-    starting = [source.url for source in selected_sources]
-    return "\n".join(
-        [
-            "1. STARTING URLS",
-            *[f"- {url}" for url in starting],
-            "2. GITHUB PROFILE(S) CHECKED",
-            *([f"- {url}" for url in profiles_checked] or ["- None"]),
-            "3. REPOSITORIES CHECKED",
-            *([f"- {item}" for item in checked] or ["- None"]),
-            "4. RELEVANT PAGES / FILES CHECKED",
-            *([f"- {item}" for item in pages] or ["- None"]),
-            "5. CONCRETE EVIDENCE FOUND",
-            *(
-                [f"- {item}" for item in evidence]
-                or [
-                    "- No concrete matching evidence found in checked open-source repositories."
-                ]
-            ),
-            "6. INACCESSIBLE PAGES",
-            *([f"- {item}" for item in inaccessible] or ["- None"]),
-            "7. REPOSITORIES SKIPPED AND WHY",
-            *([f"- {item}" for item in skipped] or ["- None"]),
-            "8. SUMMARY OF FACTUAL FINDINGS",
-            f"- Checked {len(checked)} open-source repositories and {len(pages)} repository files/pages. No final verified/unverified decision is included.",
-        ]
+        )
     )
 
 
-def select_relevant_sources(claim, requirement, sources):
-    valid_sources = [
+# ============================================================
+# Source Selection
+# ============================================================
+
+def select_relevant_sources(
+    claim,
+    requirement,
+    sources,
+):
+    """
+    Select actual developer evidence starting points.
+
+    We deliberately do NOT send every public CV URL to Browser Use.
+
+    For this MVP, GitHub is the only starting source.
+
+    Browser Use can then traverse:
+        GitHub profile
+            ↓
+        repositories
+            ↓
+        README
+            ↓
+        source files
+            ↓
+        relevant internal GitHub pages
+    """
+
+    github_sources = [
         source
         for source in sources
-        if _valid_url(source.url)
-        and _is_github_source(source)
-        and _github_url_kind(source.url)
+        if _is_github_source(source)
     ]
 
-    ranked = sorted(
-        valid_sources,
-        key=lambda source: _source_score(claim, requirement, source),
-        reverse=True,
-    )
-    logger.info(
-        "Deterministic GitHub source filtering: %d source(s), top %d selected",
-        len(valid_sources),
-        min(len(ranked), MAX_SOURCES_PER_CLAIM),
-    )
-    return ranked[:MAX_SOURCES_PER_CLAIM]
+    if not github_sources:
+        return []
 
+    # Remove duplicates while preserving order.
+    unique_sources = []
+    seen = set()
+
+    for source in github_sources:
+
+        normalized = source.url.rstrip("/")
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        unique_sources.append(source)
+
+    return unique_sources[
+        :MAX_SOURCES_PER_CLAIM
+    ]
+
+
+# ============================================================
+# Allowed Domains
+# ============================================================
 
 def _allowed_hosts(sources):
+
     hosts = []
+
     for source in sources:
-        host = urlparse(source.url).netloc.lower()
+
+        host = urlparse(
+            source.url
+        ).netloc.lower()
+
         if host and host not in hosts:
             hosts.append(host)
+
     return hosts
 
 
-def _build_task(claim, requirement, sources):
-    source_lines = "\n".join(f"- {source.url}" for source in sources)
-    hosts = ", ".join(_allowed_hosts(sources))
-    return f"""Investigate a candidate claim using only the supplied public sources and relevant linked pages.
+# ============================================================
+# Browser Use Task
+# ============================================================
 
-Claim: {claim.claim}
-Requirement: {requirement.name} - {requirement.description or ''}
-Allowed starting URLs:
+def _build_task(
+    claim,
+    requirement,
+    sources,
+):
+
+    source_lines = "\n".join(
+        f"- {source.url}"
+        for source in sources
+    )
+
+    hosts = ", ".join(
+        _allowed_hosts(sources)
+    )
+
+    return f"""
+You are a public-source evidence investigator.
+
+Your ONLY job is to investigate public developer evidence
+for ONE candidate claim.
+
+You are NOT the final evaluator.
+
+Candidate claim:
+{claim.claim}
+
+Job requirement:
+{requirement.name} - {requirement.description or ""}
+
+Starting GitHub URLs:
 {source_lines}
-Allowed domains: {hosts}
 
-Rules:
-- Investigate only GitHub public repositories from the supplied URLs.
-- Start from the supplied URLs and follow only relevant GitHub internal links, repositories, README files, code files, project pages, and profile links needed to evaluate the claim.
-- Do not browse unrelated domains or perform broad web search.
-- Do not use general web search.
-- Check up to 20 public repositories total, and for profile pages check a minimum of 2 relevant repositories when available.
-- Complete the investigation within 2 minutes 30 seconds.
-- Avoid duplicate URLs and skip inaccessible, private, deleted, or irrelevant pages after noting them.
-- Gather concrete factual findings only. Do not decide verified/unverified.
-- Do not invent evidence. If evidence is absent, say what was checked.
-- Stop once enough useful evidence has been collected, the relevant sources are exhausted, or the time/repository limits are reached.
+Allowed domains:
+{hosts}
 
-Return concise raw findings with: URLs visited, pages/repositories checked, relevant evidence found, inaccessible pages, and counts when possible.
+INVESTIGATION OBJECTIVE
+
+Determine what publicly observable developer evidence exists
+that could support the candidate's specific claim.
+
+SOURCE RESTRICTIONS
+
+- Start ONLY from the supplied GitHub URLs.
+- Browse ONLY GitHub.
+- Do NOT use Google.
+- Do NOT perform general web searches.
+- Do NOT visit LinkedIn.
+- Do NOT visit social media.
+- Do NOT visit unrelated personal websites.
+- Do NOT navigate to unrelated external domains.
+- Only follow relevant GitHub links.
+
+TRAVERSAL RULES
+
+If a supplied URL is a GitHub profile:
+
+1. Inspect the profile.
+2. Identify repositories that appear relevant to the claim.
+3. Open relevant repositories.
+4. Inspect their README/documentation.
+5. Inspect relevant source files.
+6. Inspect dependency/configuration files when useful.
+7. Inspect project structure when useful.
+8. Follow relevant GitHub internal links when necessary.
+
+Do NOT inspect every repository blindly.
+
+Prioritize repositories whose:
+- name relates to the claim,
+- description relates to the claim,
+- README relates to the claim,
+- technologies relate to the requirement,
+- implementation appears relevant.
+
+Repository limit:
+{MAX_REPOSITORIES_PER_CLAIM}
+
+INVESTIGATION RULES
+
+- Gather factual observations only.
+- Do NOT decide verified or unverified.
+- Do NOT infer facts that are not visible.
+- Do NOT invent technologies.
+- Do NOT invent project ownership.
+- Do NOT invent employers.
+- Do NOT invent dates.
+- Do NOT invent repository counts.
+- If evidence is absent, report that clearly.
+- If a page is inaccessible, record it.
+- Avoid duplicate URLs.
+- Stop when enough relevant evidence has been collected.
+
+IMPORTANT
+
+Evidence that only proves that a technology exists in a
+repository should be recorded as such.
+
+Do not transform:
+
+"Django appears in requirements.txt"
+
+into:
+
+"Candidate built a Django application."
+
+Return concise factual research containing:
+
+1. STARTING URLS
+2. GITHUB PROFILE(S) CHECKED
+3. REPOSITORIES CHECKED
+4. RELEVANT PAGES / FILES CHECKED
+5. CONCRETE EVIDENCE FOUND
+6. INACCESSIBLE PAGES
+7. REPOSITORIES SKIPPED AND WHY
+8. SUMMARY OF FACTUAL FINDINGS
+
+Do not return a final verified/unverified decision.
 """
 
 
+# ============================================================
+# Browser Use Agent Loader
+# ============================================================
+
 def _load_browser_use_agent():
+
     if not os.getenv("LLM7_API_KEY"):
         raise BrowserUseConfigurationError(
             "LLM7_API_KEY environment variable is not set."
         )
 
-    browser_use = importlib.import_module("browser_use")
-    Agent = getattr(browser_use, "Agent")
+    try:
 
-    chat_module = importlib.import_module("browser_use.llm.openai.chat")
-    ChatOpenAI = getattr(chat_module, "ChatOpenAI")
+        browser_use = importlib.import_module(
+            "browser_use"
+        )
 
-    llm = ChatOpenAI(
-        model=os.getenv("LLM7_MODEL", "default"),
-        api_key=os.getenv("LLM7_API_KEY"),
-        base_url="https://api.llm7.io/v1",
-        temperature=0.0,
-        max_completion_tokens=4096,
-        dont_force_structured_output=True,
-    )
+        Agent = getattr(
+            browser_use,
+            "Agent",
+        )
+
+        chat_module = importlib.import_module(
+            "browser_use.llm.openai.chat"
+        )
+
+        ChatOpenAI = getattr(
+            chat_module,
+            "ChatOpenAI",
+        )
+
+    except Exception as e:
+
+        raise BrowserUseConfigurationError(
+            f"Could not load Browser Use: {e}"
+        ) from e
+
+    try:
+
+        llm = ChatOpenAI(
+            model=LLM7_MODEL,
+            api_key=os.getenv("LLM7_API_KEY"),
+            base_url="https://api.llm7.io/v1",
+            temperature=0.0,
+
+            # IMPORTANT:
+            #
+            # Do NOT set:
+            # dont_force_structured_output=True
+            #
+            # Browser Use 0.11.13 expects its own agent
+            # output format. Allow Browser Use to manage
+            # the structured action response.
+            #
+            # The previous setting allowed LLM7 to return
+            # fenced Markdown JSON, which caused:
+            #
+            # Invalid JSON: expected value at line 1 column 1
+
+            max_completion_tokens=4096,
+        )
+
+    except Exception as e:
+
+        raise BrowserUseConfigurationError(
+            f"Could not configure Browser Use LLM: {e}"
+        ) from e
 
     return Agent, llm
 
 
-async def investigate_claim(claim, requirement, sources):
-    selected_sources = select_relevant_sources(claim, requirement, sources)
+# ============================================================
+# Browser Investigation
+# ============================================================
+
+async def investigate_claim(
+    claim,
+    requirement,
+    sources,
+):
+    """
+    Run Browser Use against already-selected GitHub sources.
+
+    IMPORTANT:
+    This function does NOT call select_relevant_sources().
+    Source selection happens exactly once in verify_claim().
+    """
+
+    selected_sources = [
+        source
+        for source in sources
+        if _is_github_source(source)
+    ]
+
     if not selected_sources:
+
         return {
-            "raw_findings": "No valid public source URLs were available for investigation.",
+            "raw_findings": (
+                "No valid public GitHub source URLs "
+                "were available for investigation."
+            ),
             "sources": [],
             "errors": [],
         }
 
+    task = _build_task(
+        claim,
+        requirement,
+        selected_sources,
+    )
+
     logger.info(
-        "Investigating claim %s with %s deterministic GitHub source(s)",
+        "Investigating claim %s with %s GitHub source(s)",
         claim.id,
         len(selected_sources),
     )
 
     try:
+
+        Agent, llm = _load_browser_use_agent()
+
+        agent = Agent(
+            task=task,
+            llm=llm,
+        )
+
         result = await asyncio.wait_for(
-            asyncio.to_thread(
-                _inspect_github_research, claim, requirement, selected_sources
-            ),
+            agent.run(),
             timeout=BROWSER_TIMEOUT_SECONDS,
         )
+
+    except BrowserUseConfigurationError:
+        raise
+
+    except asyncio.TimeoutError as e:
+
+        raise BrowserUseInvestigationError(
+            (
+                "Browser Use investigation timed out "
+                f"after {BROWSER_TIMEOUT_SECONDS} seconds."
+            )
+        ) from e
+
     except Exception as e:
-        raise BrowserUseInvestigationError(f"GitHub investigation failed: {e}") from e
+
+        raise BrowserUseInvestigationError(
+            f"Browser Use investigation failed: {e}"
+        ) from e
+
+    # --------------------------------------------------------
+    # Extract useful Browser Use history
+    # --------------------------------------------------------
+
+    try:
+
+        if hasattr(result, "final_result"):
+
+            final_result = result.final_result()
+
+            if final_result:
+                raw_findings = str(
+                    final_result
+                )
+
+            else:
+                raw_findings = str(result)
+
+        else:
+
+            raw_findings = str(result)
+
+    except Exception:
+
+        raw_findings = str(result)
+
+    if not raw_findings.strip():
+
+        raise BrowserUseInvestigationError(
+            "Browser Use returned no research findings."
+        )
+
+    logger.info(
+        "Browser research completed for claim %s",
+        claim.id,
+    )
 
     return {
-        "raw_findings": result,
+        "raw_findings": raw_findings,
         "sources": selected_sources,
         "errors": [],
     }
 
 
-async def _create_evidence(investigation_id, claim, source, evaluation):
-    return await sync_to_async(Evidence.objects.create)(
+# ============================================================
+# Evidence Database Helper
+# ============================================================
+
+async def _create_evidence(
+    investigation_id,
+    claim,
+    source,
+    evaluation,
+):
+
+    return await sync_to_async(
+        Evidence.objects.create
+    )(
         investigation_id=investigation_id,
         claim=claim,
         source=source,
         finding=evaluation["finding"],
-        evidence_strength=evaluation["evidence_strength"],
+        evidence_strength=evaluation[
+            "evidence_strength"
+        ],
         status=evaluation["status"],
-        details=evaluation.get("details", {}),
+        details=evaluation.get(
+            "details",
+            {},
+        ),
     )
 
 
-async def verify_claim(claim, requirement, sources):
-    from services.llm_service import evaluate_evidence
+# ============================================================
+# Claim Verification
+# ============================================================
 
-    selected_sources = select_relevant_sources(claim, requirement, sources)
+async def verify_claim(
+    claim,
+    requirement,
+    sources,
+):
+
+    from services.llm_service import (
+        evaluate_evidence,
+    )
+
+    # --------------------------------------------------------
+    # STEP 1: Select GitHub sources ONCE
+    # --------------------------------------------------------
+
+    selected_sources = select_relevant_sources(
+        claim,
+        requirement,
+        sources,
+    )
+
     if not selected_sources:
+
         return {
             "claim_id": claim.id,
             "status": "unverified",
             "evidence": [],
-            "error": "No valid sources.",
+            "error": (
+                "No valid public GitHub sources "
+                "were available."
+            ),
         }
 
-    try:
-        research = await investigate_claim(claim, requirement, selected_sources)
-    except Exception as e:
-        logger.warning("Browser investigation failed for claim %s: %s", claim.id, e)
-        research = {
-            "raw_findings": f"Browser investigation failed: {e}",
-            "sources": selected_sources,
-            "errors": [str(e)],
-        }
+    logger.info(
+        "Selected %s GitHub source(s) for claim %s",
+        len(selected_sources),
+        claim.id,
+    )
 
-    logger.info("Raw research for claim %s: %s", claim.id, research["raw_findings"])
+    # --------------------------------------------------------
+    # STEP 2: Browser investigation
+    # --------------------------------------------------------
 
     try:
-        evaluation = evaluate_evidence(claim, requirement, research["raw_findings"])
-    except Exception as e:
-        logger.warning(
-            "Gemini evidence evaluation failed for claim %s: %s", claim.id, e
+
+        research = await investigate_claim(
+            claim,
+            requirement,
+            selected_sources,
         )
+
+    except BrowserUseInvestigationError as e:
+
+        logger.warning(
+            "Browser investigation failed for claim %s: %s",
+            claim.id,
+            e,
+        )
+
+        # IMPORTANT:
+        #
+        # Do NOT send browser failure text to the
+        # evidence evaluator.
+        #
+        # Browser failure != evidence.
+        #
+
+        return {
+            "claim_id": claim.id,
+            "status": "unverified",
+            "evidence": [],
+            "error": str(e),
+        }
+
+    except Exception as e:
+
+        logger.exception(
+            "Unexpected browser investigation error "
+            "for claim %s",
+            claim.id,
+        )
+
+        return {
+            "claim_id": claim.id,
+            "status": "unverified",
+            "evidence": [],
+            "error": str(e),
+        }
+
+    raw_findings = research.get(
+        "raw_findings",
+        "",
+    )
+
+    if not raw_findings.strip():
+
+        return {
+            "claim_id": claim.id,
+            "status": "unverified",
+            "evidence": [],
+            "error": (
+                "Browser Use completed without "
+                "returning research findings."
+            ),
+            "research": research,
+        }
+
+    logger.info(
+        "Raw research for claim %s: %s",
+        claim.id,
+        raw_findings,
+    )
+
+    # --------------------------------------------------------
+    # STEP 3: LLM7 evaluates the evidence
+    # --------------------------------------------------------
+
+    try:
+
+        evaluation = evaluate_evidence(
+            claim,
+            requirement,
+            raw_findings,
+        )
+
+    except Exception as e:
+
+        logger.warning(
+            "LLM7 evidence evaluation failed "
+            "for claim %s: %s",
+            claim.id,
+            e,
+        )
+
         return {
             "claim_id": claim.id,
             "status": "unverified",
@@ -458,21 +680,55 @@ async def verify_claim(claim, requirement, sources):
             "research": research,
         }
 
-    logger.info("Gemini evaluation for claim %s: %s", claim.id, json.dumps(evaluation))
+    logger.info(
+        "LLM7 evaluation for claim %s: %s",
+        claim.id,
+        evaluation,
+    )
+
+    # --------------------------------------------------------
+    # STEP 4: Save evidence
+    # --------------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # We currently have one claim-level evaluation and
+    # selected starting sources.
+    #
+    # For the MVP, we associate the evaluation with the
+    # starting source.
+    #
+    # Later, we can improve this by having Browser Use
+    # return evidence grouped by repository URL.
+    #
 
     evidence_records = []
-    for source in research["sources"]:
-        evidence = await _create_evidence(
-            claim.investigation_id, claim, source, evaluation
-        )
-        evidence_records.append(evidence)
-        logger.info(
-            "Saved evidence %s for claim %s and source %s (status: %s)",
-            evidence.id,
-            claim.id,
-            source.id,
-            evaluation["status"],
-        )
+
+    primary_source = selected_sources[0]
+
+    evidence = await _create_evidence(
+        claim.investigation_id,
+        claim,
+        primary_source,
+        evaluation,
+    )
+
+    evidence_records.append(
+        evidence
+    )
+
+    logger.info(
+        "Saved evidence %s for claim %s "
+        "and primary source %s (status: %s)",
+        evidence.id,
+        claim.id,
+        primary_source.id,
+        evaluation["status"],
+    )
+
+    # --------------------------------------------------------
+    # STEP 5: Return final result
+    # --------------------------------------------------------
 
     return {
         "claim_id": claim.id,
