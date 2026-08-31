@@ -2,15 +2,21 @@ import json
 import logging
 import os
 import time
-from typing import Literal
 from threading import Lock
+from typing import Literal
 
+from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError, model_validator
-from dotenv import load_dotenv
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# RATE LIMITER
+# ============================================================
 
 class RateLimiter:
     def __init__(self, max_requests=100, time_window=60):
@@ -18,35 +24,64 @@ class RateLimiter:
         self.time_window = time_window
         self.requests = []
         self.lock = Lock()
-    
+
     def wait_if_needed(self):
         with self.lock:
             now = time.time()
-            self.requests = [req_time for req_time in self.requests if now - req_time < self.time_window]
-            
+
+            self.requests = [
+                request_time
+                for request_time in self.requests
+                if now - request_time < self.time_window
+            ]
+
             if len(self.requests) >= self.max_requests:
-                sleep_time = self.time_window - (now - self.requests[0]) + 1
+                sleep_time = (
+                    self.time_window
+                    - (now - self.requests[0])
+                    + 1
+                )
+
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                    self.requests = []
-            
-            self.requests.append(now)
 
-_rate_limiter = RateLimiter(max_requests=90, time_window=60)
+                self.requests = []
 
-RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "90"))
-RATE_LIMIT_TIME_WINDOW = int(os.getenv("RATE_LIMIT_TIME_WINDOW", "60"))
-
-if RATE_LIMIT_MAX_REQUESTS != 90 or RATE_LIMIT_TIME_WINDOW != 60:
-    _rate_limiter = RateLimiter(max_requests=RATE_LIMIT_MAX_REQUESTS, time_window=RATE_LIMIT_TIME_WINDOW)
-
-# --- LLM Configuration ---
-
-LLM7_BASE_URL = "https://api.llm7.io/v1"
-LLM7_MODEL = os.getenv("LLM7_MODEL", "default")
+            self.requests.append(time.time())
 
 
-# --- Custom Exceptions ---
+RATE_LIMIT_MAX_REQUESTS = int(
+    os.getenv("RATE_LIMIT_MAX_REQUESTS", "90")
+)
+
+RATE_LIMIT_TIME_WINDOW = int(
+    os.getenv("RATE_LIMIT_TIME_WINDOW", "60")
+)
+
+_rate_limiter = RateLimiter(
+    max_requests=RATE_LIMIT_MAX_REQUESTS,
+    time_window=RATE_LIMIT_TIME_WINDOW,
+)
+
+
+# ============================================================
+# LLM CONFIGURATION
+# ============================================================
+
+LLM7_BASE_URL = os.getenv(
+    "LLM7_BASE_URL",
+    "https://api.llm7.io/v1",
+)
+
+LLM7_MODEL = os.getenv(
+    "LLM7_MODEL",
+    "default",
+)
+
+
+# ============================================================
+# EXCEPTIONS
+# ============================================================
 
 class LLMConfigurationError(Exception):
     pass
@@ -64,23 +99,39 @@ class LLMValidationError(Exception):
     pass
 
 
-# --- Pydantic Response Models ---
+# ============================================================
+# RESPONSE MODELS
+# ============================================================
 
 class RequirementItem(BaseModel):
-    name: str = Field(description="Short name of the requirement, e.g. 'Django'")
+    name: str = Field(
+        description="Short name of the requirement"
+    )
+
     description: str = Field(
         default="",
         description="What the requirement entails",
     )
-    importance: Literal["high", "medium", "low"]
+
+    importance: Literal[
+        "high",
+        "medium",
+        "low",
+    ]
 
 
 class ClaimItem(BaseModel):
-    requirement: str = Field(description="Name of the matched requirement")
-    claim: str = Field(description="What the candidate claims, supported by the CV")
+    requirement: str = Field(
+        description="Name of the matched requirement"
+    )
+
+    claim: str = Field(
+        description="What the candidate claims"
+    )
+
     source_from_cv: str = Field(
         default="",
-        description="Excerpt from the CV that supports this claim",
+        description="CV excerpt supporting the claim",
     )
 
     @model_validator(mode="before")
@@ -90,17 +141,30 @@ class ClaimItem(BaseModel):
             return data
 
         normalized = data.copy()
-        if "requirement" not in normalized and "name" in normalized:
+
+        if (
+            "requirement" not in normalized
+            and "name" in normalized
+        ):
             normalized["requirement"] = normalized["name"]
 
         if "source_from_cv" not in normalized:
-            for fallback_key in ("source", "evidence", "cv_source"):
+            for fallback_key in (
+                "source",
+                "evidence",
+                "cv_source",
+            ):
                 if fallback_key in normalized:
-                    normalized["source_from_cv"] = normalized[fallback_key]
+                    normalized["source_from_cv"] = (
+                        normalized[fallback_key]
+                    )
                     break
 
         if "source_from_cv" not in normalized:
-            normalized["source_from_cv"] = normalized.get("claim", "")
+            normalized["source_from_cv"] = normalized.get(
+                "claim",
+                "",
+            )
 
         return normalized
 
@@ -108,104 +172,131 @@ class ClaimItem(BaseModel):
 class EvidenceDetails(BaseModel):
     sources_checked: int = 0
     relevant_sources: int = 0
-    key_findings: list[str] = Field(default_factory=list)
-
-
-class URLRelevanceItem(BaseModel):
-    url: str = Field(description="The URL being evaluated")
-    relevance: Literal["high", "medium", "low"] = Field(description="How likely this URL contains evidence for the claim")
-    reason: str = Field(description="Brief explanation of why this URL is or isn't relevant")
+    key_findings: list[str] = Field(
+        default_factory=list
+    )
 
 
 class EvidenceEvaluationResult(BaseModel):
     finding: str
-    evidence_strength: Literal["high", "medium", "low"]
-    status: Literal["verified", "unverified"]
-    details: EvidenceDetails = Field(default_factory=EvidenceDetails)
+
+    evidence_strength: Literal[
+        "high",
+        "medium",
+        "low",
+    ]
+
+    status: Literal[
+        "verified",
+        "unverified",
+    ]
+
+    details: EvidenceDetails = Field(
+        default_factory=EvidenceDetails
+    )
 
 
 class CandidateAnalysisResult(BaseModel):
     requirements: list[RequirementItem]
+
     claims: list[ClaimItem]
+
     urls: list[str] = Field(
-        description="Public URLs found in the CV, normalized with https://"
+        default_factory=list,
+        description="Public URLs found in the CV",
     )
 
 
-# --- System Instructions ---
+# ============================================================
+# SYSTEM PROMPTS
+# ============================================================
 
-SYSTEM_INSTRUCTIONS = """You are a recruitment data extraction assistant.
+SYSTEM_INSTRUCTIONS = """
+You are a recruitment data extraction assistant.
 
-Extract and structure information only.
-Do NOT verify claims.
+Your job is ONLY to extract information.
+
+You MUST NOT verify candidate claims.
 
 Tasks:
+
 1. Extract job requirements from the Job Description.
-2. Extract candidate claims from the CV that are relevant to those requirements.
-   Only include claims clearly supported by the CV text.
-3. Match each claim to one of the extracted requirement names.
-4. Extract all useful public URLs from the CV.
-   Include URLs from the pre-extracted URL list that belong to the candidate.
-5. Normalize all URLs to include the https:// prefix.
-   Example: github.com/user becomes https://github.com/user.
+
+2. Extract candidate claims from the CV that are relevant
+   to those requirements.
+
+3. Only include claims clearly supported by the CV text.
+
+4. Match each claim to one extracted requirement.
+
+5. Extract useful public URLs from the CV.
+
+6. Normalize URLs to HTTPS.
 
 Rules:
-- Do not invent requirements, claims, or URLs.
-- Do not verify whether claims are true.
-- Use only high, medium, or low for requirement importance.
-- Every requirement object MUST include: name, description, importance.
-- Every claim object MUST include: requirement, claim, source_from_cv.
-- Do NOT use name instead of requirement inside claim objects.
-- Return ONLY valid JSON.
-- The JSON must contain exactly these top-level fields:
-  requirements, claims, urls.
+
+- Do not invent requirements.
+- Do not invent claims.
+- Do not invent URLs.
+- Do not verify claims.
+- Every requirement must contain:
+  name, description, importance.
+- Every claim must contain:
+  requirement, claim, source_from_cv.
+- Do not use "name" inside claim objects.
+- importance must be high, medium, or low.
+- Return ONLY JSON.
+
+Top-level fields MUST be exactly:
+
+requirements
+claims
+urls
 """
 
-
-# --- Prompt Builders ---
 
 def _build_prompt(
     cv_text: str,
     job_description: str,
     extracted_urls: list[str],
 ) -> str:
+
     urls_section = (
-        "\n".join(f"- {url}" for url in extracted_urls)
+        "\n".join(
+            f"- {url}"
+            for url in extracted_urls
+        )
         if extracted_urls
         else "(none)"
     )
 
-    return f"""{SYSTEM_INSTRUCTIONS}
+    return f"""
+{SYSTEM_INSTRUCTIONS}
 
-## Job Description
+JOB DESCRIPTION
+================
 
 {job_description}
 
-## CV Text
+
+CV TEXT
+=======
 
 {cv_text}
 
-## Pre-extracted URLs from PDF
+
+PRE-EXTRACTED URLS
+==================
 
 {urls_section}
 
-Return JSON in this exact shape:
+
+Return exactly:
+
 {{
-  "requirements": [
-    {{
-      "name": "Django",
-      "description": "Experience building applications with Django",
-      "importance": "high"
-    }}
-  ],
-  "claims": [
-    {{
-      "requirement": "Django",
-      "claim": "Candidate built a booking engine using Django",
-      "source_from_cv": "Engineered a web-based accommodation booking engine using Python (Django)"
-    }}
-  ],
-  "urls": ["https://github.com/example"]
+  "requirements": [],
+  "claims": [],
+  "urls": []
 }}
 """
 
@@ -216,28 +307,64 @@ def _build_evidence_prompt(
     research_findings: str,
 ) -> str:
 
-    return f"""You evaluate browser research about ONE candidate claim.
+    return f"""
+You are a recruitment evidence evaluator.
 
-Claim:
+You are evaluating ONE candidate claim.
+
+Candidate claim:
 {claim.claim}
 
 Requirement:
-{requirement.name} - {requirement.description or ''}
+{requirement.name} - {requirement.description or ""}
 
-Browser research findings:
+RAW BROWSER RESEARCH:
+=====================
+
 {research_findings}
 
-Your task:
 
-Determine whether the browser research provides sufficient public
-evidence to support the candidate's claim.
+OBJECTIVE
+=========
 
-Return EXACTLY ONE JSON OBJECT.
+Determine whether the supplied public GitHub research
+contains sufficient evidence to support the candidate's claim.
 
-The JSON MUST have these fields:
+
+IMPORTANT
+
+You are NOT allowed to perform additional research.
+
+Use ONLY the browser research above.
+
+Do not invent:
+
+- repositories
+- URLs
+- technologies
+- employers
+- projects
+- deployment information
+- counts
+- dates
+- facts
+
+
+VERIFICATION RULE
+
+"verified" means the supplied GitHub evidence sufficiently
+supports the candidate claim.
+
+"unverified" means the available GitHub evidence is
+insufficient.
+
+"unverified" does NOT mean the claim is false.
+
+
+RETURN EXACTLY THIS JSON SHAPE:
 
 {{
-    "finding": "A concise explanation of what the evidence shows",
+    "finding": "Concise explanation of the evidence",
     "evidence_strength": "high",
     "status": "verified",
     "details": {{
@@ -247,141 +374,80 @@ The JSON MUST have these fields:
     }}
 }}
 
-Rules:
 
-- "finding" must be a string.
-- "evidence_strength" MUST be exactly one of:
-  "high", "medium", "low".
-- "status" MUST be exactly one of:
-  "verified", "unverified".
-- "details.sources_checked" must be an integer.
-- "details.relevant_sources" must be an integer.
-- "details.key_findings" must be an array of strings.
-- Use ONLY the browser research findings.
-- Do NOT invent facts.
-- Do NOT invent URLs.
-- Do NOT invent repositories.
-- Do NOT invent technologies.
-- Do NOT invent employers.
-- Do NOT invent counts.
-- "verified" means public GitHub repository evidence sufficiently supports the claim.
-- "unverified" means the available public GitHub repository evidence is insufficient.
-- "unverified" does NOT mean the claim is false.
-- Do NOT return a "findings" array.
-- Do NOT return multiple results.
-- Return ONLY the single JSON object.
+Allowed evidence_strength values:
+
+high
+medium
+low
+
+
+Allowed status values:
+
+verified
+unverified
+
+
+Return ONLY JSON.
 """
 
 
-def _build_url_relevance_prompt(
-    claim,
-    requirement,
-    urls: list[str],
-) -> str:
-    urls_section = "\n".join(f"- {url}" for url in urls)
-    return f"""Evaluate which URLs could contain evidence for a candidate claim.
-
-Claim:
-{claim.claim}
-
-Requirement:
-{requirement.name} - {requirement.description or ''}
-
-URLs to evaluate:
-{urls_section}
-
-Your task:
-
-For each URL, determine how likely it is to contain evidence supporting the claim.
-Consider the URL structure, domain, and any visible context.
-
-Return EXACTLY ONE JSON OBJECT with this structure:
-
-{{
-    "urls": [
-        {{
-            "url": "https://example.com",
-            "relevance": "high",
-            "reason": "GitHub profile likely contains code repositories"
-        }}
-    ]
-}}
-
-Rules:
-
-- "relevance" MUST be exactly one of: "high", "medium", "low".
-- "high" = GitHub profile or repository likely to contain public code evidence for tech claims
-- "medium" = GitHub URL that might contain relevant public code evidence
-- "low" = non-GitHub URL or GitHub URL unlikely to contain evidence for this specific claim
-- Be conservative - if uncertain, use "medium" or "low"
-- Do NOT visit the URLs.
-- Base judgment only on the URL itself.
-- Return ALL URLs in the input list.
-- Do NOT add or remove URLs.
-"""
-
-
-
-
-
-# --- JSON Helpers ---
+# ============================================================
+# JSON HELPERS
+# ============================================================
 
 def _extract_json_from_markdown(content: str) -> str:
     if not content:
         return content
-    
+
     content = content.strip()
-    
-    if content.startswith('```json'):
-        content = content[7:]
-    elif content.startswith('```'):
-        content = content[3:]
-    
-    if content.endswith('```'):
+
+    if content.startswith("```json"):
+        content = content[len("```json"):]
+
+    elif content.startswith("```"):
+        content = content[len("```"):]
+
+    if content.endswith("```"):
         content = content[:-3]
-    
+
     return content.strip()
 
 
-def _fix_truncated_json(content: str) -> str:
-    if not content:
-        return content
-    
-    content = content.strip()
-    
-    # Count brackets to see if JSON is incomplete
-    open_braces = content.count('{')
-    close_braces = content.count('}')
-    open_brackets = content.count('[')
-    close_brackets = content.count(']')
-    
-    # Add missing closing brackets
-    missing_braces = open_braces - close_braces
-    missing_brackets = open_brackets - close_brackets
-    
-    fixed = content
-    if missing_braces > 0:
-        fixed += '}' * missing_braces
-    if missing_brackets > 0:
-        fixed += ']' * missing_brackets
-    
-    # Also fix common truncation patterns
-    if fixed.endswith(','):
-        fixed = fixed[:-1]
-    
-    return fixed
+def _parse_json(content: str) -> dict:
+    content = _extract_json_from_markdown(content)
+
+    try:
+        return json.loads(content)
+
+    except json.JSONDecodeError:
+
+        # Attempt to locate the outermost JSON object.
+        start = content.find("{")
+        end = content.rfind("}")
+
+        if start == -1 or end == -1:
+            raise
+
+        return json.loads(
+            content[start:end + 1]
+        )
 
 
-# --- URL Helpers ---
+# ============================================================
+# URL HELPERS
+# ============================================================
 
 def _normalize_url(url: str) -> str:
     url = url.strip()
+
     if not url:
         return url
 
     if url.startswith("http://"):
         return "https://" + url[7:]
-    elif not url.startswith("https://"):
+
+    if not url.startswith("https://"):
         return "https://" + url
 
     return url
@@ -391,11 +457,14 @@ def _merge_urls(
     llm_urls: list[str],
     extracted_urls: list[str],
 ) -> list[str]:
+
     seen = set()
     merged = []
 
     for url in llm_urls + extracted_urls:
+
         normalized = _normalize_url(url)
+
         if normalized and normalized not in seen:
             seen.add(normalized)
             merged.append(normalized)
@@ -403,12 +472,18 @@ def _merge_urls(
     return merged
 
 
-# --- API Client ---
+# ============================================================
+# API CLIENT
+# ============================================================
 
 def _get_client() -> OpenAI:
+
     api_key = os.getenv("LLM7_API_KEY")
+
     if not api_key:
-        raise LLMConfigurationError("LLM7_API_KEY environment variable is not set.")
+        raise LLMConfigurationError(
+            "LLM7_API_KEY environment variable is not set."
+        )
 
     return OpenAI(
         base_url=LLM7_BASE_URL,
@@ -416,7 +491,9 @@ def _get_client() -> OpenAI:
     )
 
 
-# --- Main Operations ---
+# ============================================================
+# CANDIDATE EXTRACTION
+# ============================================================
 
 def analyze_candidate(
     cv_text: str,
@@ -425,48 +502,96 @@ def analyze_candidate(
 ) -> dict:
 
     if not cv_text or not cv_text.strip():
-        raise LLMResponseError("CV text is empty.")
+        raise LLMResponseError(
+            "CV text is empty."
+        )
 
     if not job_description or not job_description.strip():
-        raise LLMResponseError("Job description is empty.")
+        raise LLMResponseError(
+            "Job description is empty."
+        )
 
     extracted_urls = extracted_urls or []
+
     _rate_limiter.wait_if_needed()
+
     client = _get_client()
-    prompt = _build_prompt(cv_text, job_description, extracted_urls)
+
+    prompt = _build_prompt(
+        cv_text,
+        job_description,
+        extracted_urls,
+    )
 
     try:
+
         response = client.chat.completions.create(
             model=LLM7_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_INSTRUCTIONS},
-                {"role": "user", "content": prompt},
+                {
+                    "role": "system",
+                    "content": SYSTEM_INSTRUCTIONS,
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
             ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
+            response_format={
+                "type": "json_object"
+            },
+            temperature=0.1,
             max_tokens=8000,
         )
+
     except Exception as e:
-        raise LLMAPIError(f"LLM7 API request failed: {e}") from e
+
+        raise LLMAPIError(
+            f"LLM7 API request failed: {e}"
+        ) from e
 
     content = response.choices[0].message.content
-    if not content:
-        raise LLMResponseError("LLM7 returned an empty response.")
 
-    content = _extract_json_from_markdown(content)
-    content = _fix_truncated_json(content)
+    if not content:
+        raise LLMResponseError(
+            "LLM7 returned an empty response."
+        )
 
     try:
-        result = CandidateAnalysisResult.model_validate_json(content)
-    except ValidationError as e:
-        logger.error(f"LLM response content: {content[:500]}...")
-        raise LLMValidationError(f"Invalid structured output from LLM7: {e}") from e
+
+        data = _parse_json(content)
+
+        result = CandidateAnalysisResult.model_validate(
+            data
+        )
+
+    except (
+        json.JSONDecodeError,
+        ValidationError,
+    ) as e:
+
+        logger.error(
+            "Invalid LLM response: %s",
+            content[:2000],
+        )
+
+        raise LLMValidationError(
+            f"Invalid structured output from LLM7: {e}"
+        ) from e
 
     data = result.model_dump()
-    data["urls"] = _merge_urls(data["urls"], extracted_urls)
+
+    data["urls"] = _merge_urls(
+        data["urls"],
+        extracted_urls,
+    )
 
     return data
 
+
+# ============================================================
+# EVIDENCE EVALUATION
+# ============================================================
 
 def evaluate_evidence(
     claim,
@@ -474,12 +599,16 @@ def evaluate_evidence(
     research_findings: str,
 ) -> dict:
 
-    if not research_findings or not research_findings.strip():
+    if (
+        not research_findings
+        or not research_findings.strip()
+    ):
         raise LLMResponseError(
             "Browser research findings are empty."
         )
 
     _rate_limiter.wait_if_needed()
+
     client = _get_client()
 
     prompt = _build_evidence_prompt(
@@ -489,19 +618,23 @@ def evaluate_evidence(
     )
 
     try:
+
         response = client.chat.completions.create(
             model=LLM7_MODEL,
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are a recruitment evidence evaluation assistant. "
-                        "You MUST return exactly one JSON object matching the "
-                        "provided schema. "
-                        "Do not return arrays. "
-                        "Do not create a 'findings' field. "
-                        "Do not add extra top-level fields."
-                    ),
+                    "content": """
+You are a recruitment evidence evaluator.
+
+Return exactly ONE JSON object.
+
+Do not return markdown.
+Do not return ```json.
+Do not return arrays.
+Do not add fields.
+Do not perform additional research.
+""",
                 },
                 {
                     "role": "user",
@@ -512,9 +645,11 @@ def evaluate_evidence(
                 "type": "json_object"
             },
             temperature=0.0,
+            max_tokens=2000,
         )
 
     except Exception as e:
+
         raise LLMAPIError(
             f"LLM7 evidence evaluation failed: {e}"
         ) from e
@@ -526,82 +661,26 @@ def evaluate_evidence(
             "LLM7 returned an empty evidence response."
         )
 
-    content = _extract_json_from_markdown(content)
-    
     try:
-        result = EvidenceEvaluationResult.model_validate_json(
-            content
+
+        data = _parse_json(content)
+
+        result = EvidenceEvaluationResult.model_validate(
+            data
         )
 
-    except ValidationError as e:
+    except (
+        json.JSONDecodeError,
+        ValidationError,
+    ) as e:
+
+        logger.error(
+            "Invalid evidence response: %s",
+            content[:2000],
+        )
+
         raise LLMValidationError(
-            f"Invalid evidence output from LLM7: {e}\n"
-            f"Raw LLM7 response: {content}"
+            f"Invalid evidence output from LLM7: {e}"
         ) from e
 
     return result.model_dump()
-
-
-def evaluate_url_relevance(
-    claim,
-    requirement,
-    urls: list[str],
-) -> list[dict]:
-
-    if not urls:
-        return []
-
-    _rate_limiter.wait_if_needed()
-    client = _get_client()
-
-    prompt = _build_url_relevance_prompt(
-        claim,
-        requirement,
-        urls,
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model=LLM7_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a URL relevance evaluator. "
-                        "You MUST return exactly one JSON object with a 'urls' array. "
-                        "Each item must have 'url', 'relevance', and 'reason' fields."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.0,
-        )
-    except Exception as e:
-        raise LLMAPIError(f"LLM7 URL relevance evaluation failed: {e}") from e
-
-    content = response.choices[0].message.content
-
-    if not content:
-        raise LLMResponseError("LLM7 returned an empty URL relevance response.")
-
-    content = _extract_json_from_markdown(content)
-    
-    try:
-        data = json.loads(content)
-        if "urls" not in data:
-            raise LLMResponseError("Response missing 'urls' field")
-        
-        validated = []
-        for item in data["urls"]:
-            validated.append(URLRelevanceItem.model_validate(item).model_dump())
-        
-        return validated
-    except (json.JSONDecodeError, ValidationError) as e:
-        raise LLMValidationError(
-            f"Invalid URL relevance output from LLM7: {e}\n"
-            f"Raw LLM7 response: {content}"
-        ) from e
